@@ -16,61 +16,112 @@ const APP_ID: &str = "dev.dedon.ClaudeCodeLauncher";
 const MAX_HEIGHT: i32 = 320;
 const MIN_HEIGHT: i32 = 48;
 
-const STYLES: &str = "
-window.launcher {
+const MAX_COMPLETIONS_SHOWN: usize = 8;
+
+#[derive(Deserialize, Debug, Default)]
+struct Theme {
+    popup_background: Option<String>,
+    popup_border: Option<String>,
+    popup_text: Option<String>,
+    placeholder_text: Option<String>,
+    pill_background: Option<String>,
+    pill_text: Option<String>,
+    pill_border: Option<String>,
+    completion_text: Option<String>,
+    completion_selected_background: Option<String>,
+    font_size: Option<String>,
+    pill_font_size: Option<String>,
+    completion_font_size: Option<String>,
+}
+
+fn build_styles(theme: &Theme) -> String {
+    let popup_background = theme
+        .popup_background
+        .as_deref()
+        .unwrap_or("rgba(30, 30, 40, 0.92)");
+    let popup_border = theme
+        .popup_border
+        .as_deref()
+        .unwrap_or("rgba(255, 255, 255, 0.06)");
+    let popup_text = theme.popup_text.as_deref().unwrap_or("#f0f0f0");
+    let placeholder_text = theme
+        .placeholder_text
+        .as_deref()
+        .unwrap_or("rgba(240, 240, 240, 0.4)");
+    let pill_background = theme.pill_background.as_deref().unwrap_or("#f5c518");
+    let pill_text = theme.pill_text.as_deref().unwrap_or("#1a1a1a");
+    let pill_border = theme
+        .pill_border
+        .as_deref()
+        .unwrap_or("rgba(0, 0, 0, 0.25)");
+    let completion_text = theme
+        .completion_text
+        .as_deref()
+        .unwrap_or("rgba(240, 240, 240, 0.85)");
+    let completion_selected_background = theme
+        .completion_selected_background
+        .as_deref()
+        .unwrap_or("rgba(255, 255, 255, 0.10)");
+    let font_size = theme.font_size.as_deref().unwrap_or("14pt");
+    let pill_font_size = theme.pill_font_size.as_deref().unwrap_or("11pt");
+    let completion_font_size = theme.completion_font_size.as_deref().unwrap_or("11pt");
+
+    format!(
+        "
+window.launcher {{
     background: transparent;
-}
+}}
 
-box.popup {
-    background: rgba(30, 30, 40, 0.92);
+box.popup {{
+    background: {popup_background};
     border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid {popup_border};
     padding: 10px;
-}
+}}
 
-scrolledwindow {
+scrolledwindow {{
     background: transparent;
     border: none;
-}
+}}
 
-textview, textview text {
+textview, textview text {{
     background: transparent;
-    color: #f0f0f0;
-    font-size: 14pt;
-}
+    color: {popup_text};
+    font-size: {font_size};
+}}
 
-label.placeholder {
-    color: rgba(240, 240, 240, 0.4);
-    font-size: 14pt;
-}
+label.placeholder {{
+    color: {placeholder_text};
+    font-size: {font_size};
+}}
 
-label.project-pill {
-    background: #f5c518;
-    color: #1a1a1a;
-    font-size: 11pt;
+label.project-pill {{
+    background: {pill_background};
+    color: {pill_text};
+    font-size: {pill_font_size};
     font-weight: 600;
     padding: 4px 12px;
     border-radius: 999px;
-    border: 1px solid rgba(0, 0, 0, 0.25);
-}
+    border: 1px solid {pill_border};
+}}
 
-box.completions {
+box.completions {{
     margin-top: 6px;
-}
+}}
 
-label.completion {
-    color: rgba(240, 240, 240, 0.85);
-    font-size: 11pt;
+label.completion {{
+    color: {completion_text};
+    font-size: {completion_font_size};
     padding: 4px 6px;
     border-radius: 6px;
-}
+}}
 
-label.completion.selected {
-    background: rgba(255, 255, 255, 0.10);
+label.completion.selected {{
+    background: {completion_selected_background};
+}}
+"
+    )
 }
-";
-
-const MAX_COMPLETIONS_SHOWN: usize = 8;
 
 #[derive(Deserialize, Debug)]
 struct Config {
@@ -84,6 +135,8 @@ struct Config {
     projects_directory: Option<PathBuf>,
     #[serde(default = "default_resume_args")]
     resume_args: Vec<String>,
+    #[serde(default)]
+    theme: Theme,
 }
 
 fn default_resume_args() -> Vec<String> {
@@ -135,7 +188,7 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-const DEFAULT_CONFIG_TEMPLATE: &str = r#"# claude-code-launcher config
+const DEFAULT_CONFIG_TEMPLATE: &str = r##"# claude-code-launcher config
 # Edit working_directory and terminal_command before launching.
 
 working_directory = "/absolute/path/to/your/projects/dir"
@@ -149,7 +202,23 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 # Optional:
 # history_size = 100
 # resume_args = ["--resume"]
-"#;
+
+# Optional visual overrides. Any CSS color value works
+# (hex, rgb(), rgba(), or named colors).
+# [theme]
+# popup_background = "rgba(30, 30, 40, 0.92)"
+# popup_border = "rgba(255, 255, 255, 0.06)"
+# popup_text = "#f0f0f0"
+# placeholder_text = "rgba(240, 240, 240, 0.4)"
+# pill_background = "#f5c518"
+# pill_text = "#1a1a1a"
+# pill_border = "rgba(0, 0, 0, 0.25)"
+# completion_text = "rgba(240, 240, 240, 0.85)"
+# completion_selected_background = "rgba(255, 255, 255, 0.10)"
+# font_size = "14pt"
+# pill_font_size = "11pt"
+# completion_font_size = "11pt"
+"##;
 
 fn write_default_config(path: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = path.parent() {
@@ -348,8 +417,6 @@ fn main() -> glib::ExitCode {
 }
 
 fn activate(app: &Application) {
-    install_css();
-
     let path = config_path();
     if !path.exists() {
         match write_default_config(&path) {
@@ -410,6 +477,8 @@ fn activate(app: &Application) {
         return;
     }
 
+    install_css(&config.theme);
+
     let projects = match build_project_list(&config) {
         Ok(p) => p,
         Err(msg) => {
@@ -454,9 +523,9 @@ fn build_project_list(config: &Config) -> Result<Vec<Project>, String> {
     Ok(out)
 }
 
-fn install_css() {
+fn install_css(theme: &Theme) {
     let provider = CssProvider::new();
-    provider.load_from_string(STYLES);
+    provider.load_from_string(&build_styles(theme));
     if let Some(display) = gdk::Display::default() {
         gtk4::style_context_add_provider_for_display(
             &display,
