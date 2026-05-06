@@ -4,6 +4,8 @@ A small GTK4 popup launcher for [Claude Code](https://claude.com/product/claude-
 
 Bind it to a global hotkey, type a prompt, hit Enter — your terminal opens with `claude` already running on it.
 
+![Screenshot of the launcher popup](assets/screenshot.png)
+
 ## Requirements
 
 - Linux with GTK4 (≥ 4.12) at runtime
