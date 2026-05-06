@@ -5,7 +5,7 @@ use gtk4::{
     ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
 };
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -198,6 +198,7 @@ struct State {
     suppress_change: bool,
     projects: Vec<Project>,
     current_project: usize,
+    project_label_revealed: bool,
     commands: Vec<String>,
     visible_completions: Vec<usize>,
     selected_completion: usize,
@@ -218,6 +219,7 @@ impl State {
             suppress_change: false,
             projects,
             current_project: 0,
+            project_label_revealed: false,
             commands,
             visible_completions: Vec::new(),
             selected_completion: 0,
@@ -367,13 +369,18 @@ fn activate(app: &Application) {
 }
 
 fn build_project_list(config: &Config) -> Result<Vec<Project>, String> {
-    if config.projects.is_empty() {
-        return Ok(vec![Project {
-            name: "default".to_string(),
-            path: config.working_directory.clone(),
-        }]);
-    }
-    let mut out = Vec::with_capacity(config.projects.len());
+    let default_name = config
+        .working_directory
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "default".to_string());
+
+    let mut out = vec![Project {
+        name: default_name,
+        path: config.working_directory.clone(),
+    }];
+
     for raw in &config.projects {
         if raw.name.trim().is_empty() {
             return Err("Each [[projects]] entry needs a non-empty `name`.".to_string());
@@ -385,11 +392,15 @@ fn build_project_list(config: &Config) -> Result<Vec<Project>, String> {
                 raw.path.display()
             ));
         }
+        if raw.path == config.working_directory {
+            continue;
+        }
         out.push(Project {
             name: raw.name.clone(),
             path: raw.path.clone(),
         });
     }
+
     Ok(out)
 }
 
@@ -442,7 +453,6 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     overlay.add_overlay(&placeholder);
 
     let buffer = text_view.buffer();
-    let multi_project = projects.len() > 1;
     let state = Rc::new(RefCell::new(State::new(
         load_history(),
         config.history_size,
@@ -480,7 +490,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let project_label = Label::builder()
         .halign(Align::Start)
         .can_target(false)
-        .visible(multi_project)
+        .visible(false)
         .build();
     project_label.add_css_class("project");
     project_label.set_label(state.borrow().current_project_name());
@@ -562,8 +572,13 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         if is_tab_key && has_ctrl {
             let forward = key == gdk::Key::Tab && !has_shift;
             let mut st = state_for_key.borrow_mut();
-            st.cycle_project(forward);
+            if !st.project_label_revealed {
+                st.project_label_revealed = true;
+            } else {
+                st.cycle_project(forward);
+            }
             project_label_for_key.set_label(st.current_project_name());
+            project_label_for_key.set_visible(true);
             return glib::Propagation::Stop;
         }
 
@@ -584,6 +599,16 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         glib::Propagation::Proceed
     });
     text_view.add_controller(key_controller);
+
+    let buffer_for_active = text_view.buffer();
+    let was_active = Rc::new(Cell::new(false));
+    window.connect_is_active_notify(move |w| {
+        if w.is_active() {
+            was_active.set(true);
+        } else if was_active.get() && buffer_for_active.char_count() == 0 {
+            w.close();
+        }
+    });
 
     window.present();
     text_view.grab_focus();

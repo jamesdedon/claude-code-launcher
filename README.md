@@ -42,7 +42,7 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 
 Both fields are required. The launcher refuses to open if either is missing or invalid.
 
-- **`working_directory`** — where Claude Code will run (use an absolute path; `~` is not expanded). Used as the default project when no `[[projects]]` are listed.
+- **`working_directory`** — where Claude Code will run (use an absolute path; `~` is not expanded). Always the default (first) project in the cycle; any `[[projects]]` are appended.
 - **`terminal_command`** — argv array for spawning your terminal. The strings `{cwd}` and `{prompt}` are substituted at launch time.
 
 ### Optional fields
@@ -54,8 +54,10 @@ history_size = 100
 # Args spliced before {prompt} when you launch with Ctrl+Enter (resume mode).
 resume_args = ["--resume"]
 
-# Multiple project working directories. When set, a label above the input
-# shows the active project and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
+# Additional project working directories. The top-level `working_directory`
+# is always the first entry (named after its folder); these are appended.
+# When more than one project exists a label above the input shows the active
+# one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
 [[projects]]
 name = "launcher"
 path = "/home/you/Projects/claude-code-launcher"
