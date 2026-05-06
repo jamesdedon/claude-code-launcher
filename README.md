@@ -42,8 +42,28 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 
 Both fields are required. The launcher refuses to open if either is missing or invalid.
 
-- **`working_directory`** — where Claude Code will run (use an absolute path; `~` is not expanded).
+- **`working_directory`** — where Claude Code will run (use an absolute path; `~` is not expanded). Used as the default project when no `[[projects]]` are listed.
 - **`terminal_command`** — argv array for spawning your terminal. The strings `{cwd}` and `{prompt}` are substituted at launch time.
+
+### Optional fields
+
+```toml
+# Capacity of the persistent prompt history (default 100).
+history_size = 100
+
+# Args spliced before {prompt} when you launch with Ctrl+Enter (resume mode).
+resume_args = ["--resume"]
+
+# Multiple project working directories. When set, a label above the input
+# shows the active project and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
+[[projects]]
+name = "launcher"
+path = "/home/you/Projects/claude-code-launcher"
+
+[[projects]]
+name = "notes"
+path = "/home/you/Documents/notes"
+```
 
 ### Examples for other terminals
 
@@ -82,7 +102,11 @@ The popup is a chromeless translucent box with rounded corners. It appears where
 
 - **Type and Enter** — launches Claude in your terminal with the prompt as initial input, and closes the popup.
 - **Shift+Enter** — insert a newline. Long prompts wrap and the popup grows downward, scrolling once it hits a height cap.
-- **Esc** — close the popup without launching.
+- **Ctrl+Enter** — launch with `--resume` (configurable via `resume_args`) so Claude opens its session picker instead of starting fresh.
+- **Up / Down** — at the first/last line of the input, recall older/newer prompts from history. History is persisted across sessions to `$XDG_STATE_HOME/claude-code-launcher/history.toml`.
+- **Ctrl+Tab / Ctrl+Shift+Tab** — cycle the active project (only when multiple `[[projects]]` are configured).
+- **`/` then Tab** — autocomplete a slash command from `~/.claude/commands/*.md`. Up/Down moves the suggestion selection while the list is visible.
+- **Esc** — dismiss the slash-command list if open, otherwise close the popup.
 - **Empty prompt + Enter** — does nothing.
 
 ## How it works
