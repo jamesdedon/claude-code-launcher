@@ -6,7 +6,7 @@ Bind it to a global hotkey, type a prompt, hit Enter — your terminal opens wit
 
 ## Requirements
 
-- Linux with GTK4 (≥ 4.10) at runtime
+- Linux with GTK4 (≥ 4.12) at runtime
 - Rust toolchain (only for building / installing)
 - A terminal emulator of your choice
 - The `claude` CLI on your PATH
@@ -76,7 +76,10 @@ For KDE, Sway, Hyprland, i3, etc.: bind the same command in your compositor's ke
 
 ## Usage
 
-- **Type and Enter** — launches Claude in your terminal with the prompt as initial input.
+The popup is a chromeless translucent box with rounded corners. It appears wherever your compositor decides; drag it from anywhere inside to move it.
+
+- **Type and Enter** — launches Claude in your terminal with the prompt as initial input, and closes the popup.
+- **Shift+Enter** — insert a newline. Long prompts wrap and the popup grows downward, scrolling once it hits a height cap.
 - **Esc** — close the popup without launching.
 - **Empty prompt + Enter** — does nothing.
 
