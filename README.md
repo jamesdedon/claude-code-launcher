@@ -45,6 +45,8 @@ Both fields are required. The launcher refuses to open if either is missing or i
 - **`working_directory`** — where Claude Code will run (use an absolute path; `~` is not expanded). Always the default (first) project in the cycle; any `[[projects]]` are appended.
 - **`terminal_command`** — argv array for spawning your terminal. The strings `{cwd}` and `{prompt}` are substituted at launch time.
 
+> **⚠️ Keep `{prompt}` as its own argv element.** The launcher spawns the terminal directly (no shell), so `["claude", "{prompt}"]` passes the prompt as a single, safely-quoted argument. If you instead route through a shell — e.g. `["sh", "-c", "claude '{prompt}'"]` — every prompt you type becomes shell-interpreted and a prompt containing `'; rm -rf ~; '` will do exactly what it looks like. The same applies to `{cwd}` if you ever embed it inside a `sh -c` string.
+
 ### Optional fields
 
 ```toml
