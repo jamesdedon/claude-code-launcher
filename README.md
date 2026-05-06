@@ -33,7 +33,9 @@ Either compiles a release binary and installs it to `~/.cargo/bin/claude-code-la
 
 ## Configuration
 
-Create `~/.config/claude-code-launcher/config.toml`:
+On first launch (when no config file exists yet) the launcher writes a starter `~/.config/claude-code-launcher/config.toml` and shows a dialog telling you to edit it. Once a config is present it is never overwritten.
+
+The starter file mirrors the example below — you still need to set a real `working_directory` and a `terminal_command` that fits your terminal:
 
 ```toml
 working_directory = "/absolute/path/to/your/projects/dir"

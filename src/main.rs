@@ -138,6 +138,29 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
+const DEFAULT_CONFIG_TEMPLATE: &str = r#"# claude-code-launcher config
+# Edit working_directory and terminal_command before launching.
+
+working_directory = "/absolute/path/to/your/projects/dir"
+terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "--", "claude", "{prompt}"]
+
+# Optional:
+# history_size = 100
+# resume_args = ["--resume"]
+
+# [[projects]]
+# name = "example"
+# path = "/home/you/Projects/example"
+"#;
+
+fn write_default_config(path: &Path) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, DEFAULT_CONFIG_TEMPLATE)?;
+    Ok(())
+}
+
 #[derive(Deserialize, Serialize, Default, Debug)]
 struct HistoryFile {
     #[serde(default)]
@@ -322,13 +345,38 @@ fn main() -> glib::ExitCode {
 fn activate(app: &Application) {
     install_css();
 
+    let path = config_path();
+    if !path.exists() {
+        match write_default_config(&path) {
+            Ok(()) => {
+                show_startup_error(
+                    app,
+                    "Created default config",
+                    &format!(
+                        "A starter config has been written to:\n\n{}\n\n\
+                         Edit working_directory and terminal_command, then relaunch.",
+                        path.display()
+                    ),
+                );
+            }
+            Err(e) => {
+                show_startup_error(
+                    app,
+                    "Failed to create default config",
+                    &format!("{}\n\n{}", path.display(), e),
+                );
+            }
+        }
+        return;
+    }
+
     let config = match load_config() {
         Ok(c) => c,
         Err(e) => {
             show_startup_error(
                 app,
                 "Failed to load config",
-                &format!("{}\n\n{}", config_path().display(), e),
+                &format!("{}\n\n{}", path.display(), e),
             );
             return;
         }
