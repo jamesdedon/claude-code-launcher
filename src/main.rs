@@ -81,19 +81,13 @@ struct Config {
     #[serde(default = "default_history_size")]
     history_size: usize,
     #[serde(default)]
-    projects: Vec<RawProject>,
+    projects_directory: Option<PathBuf>,
     #[serde(default = "default_resume_args")]
     resume_args: Vec<String>,
 }
 
 fn default_resume_args() -> Vec<String> {
     vec!["--resume".to_string()]
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct RawProject {
-    name: String,
-    path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -147,13 +141,14 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# claude-code-launcher config
 working_directory = "/absolute/path/to/your/projects/dir"
 terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "--", "claude", "{prompt}"]
 
+# Optional: a parent folder whose subdirectories become cycle targets
+# (Ctrl+Tab cycles through them; cycling wraps back through "no target",
+# which falls back to working_directory above).
+# projects_directory = "/home/you/Projects"
+
 # Optional:
 # history_size = 100
 # resume_args = ["--resume"]
-
-# [[projects]]
-# name = "example"
-# path = "/home/you/Projects/example"
 "#;
 
 fn write_default_config(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -222,9 +217,9 @@ struct State {
     history_index: Option<usize>,
     draft: String,
     suppress_change: bool,
+    default_path: PathBuf,
     projects: Vec<Project>,
-    current_project: usize,
-    project_label_revealed: bool,
+    current_project: Option<usize>,
     commands: Vec<String>,
     visible_completions: Vec<usize>,
     selected_completion: usize,
@@ -234,6 +229,7 @@ impl State {
     fn new(
         history: Vec<String>,
         history_size: usize,
+        default_path: PathBuf,
         projects: Vec<Project>,
         commands: Vec<String>,
     ) -> Self {
@@ -243,9 +239,9 @@ impl State {
             history_index: None,
             draft: String::new(),
             suppress_change: false,
+            default_path,
             projects,
-            current_project: 0,
-            project_label_revealed: false,
+            current_project: None,
             commands,
             visible_completions: Vec::new(),
             selected_completion: 0,
@@ -290,23 +286,29 @@ impl State {
     }
 
     fn cycle_project(&mut self, forward: bool) {
-        if self.projects.len() <= 1 {
+        if self.projects.is_empty() {
             return;
         }
         let n = self.projects.len();
-        self.current_project = if forward {
-            (self.current_project + 1) % n
-        } else {
-            (self.current_project + n - 1) % n
+        self.current_project = match (self.current_project, forward) {
+            (None, true) => Some(0),
+            (None, false) => Some(n - 1),
+            (Some(i), true) if i + 1 == n => None,
+            (Some(i), true) => Some(i + 1),
+            (Some(0), false) => None,
+            (Some(i), false) => Some(i - 1),
         };
     }
 
     fn current_project_path(&self) -> PathBuf {
-        self.projects[self.current_project].path.clone()
+        match self.current_project {
+            Some(i) => self.projects[i].path.clone(),
+            None => self.default_path.clone(),
+        }
     }
 
-    fn current_project_name(&self) -> &str {
-        &self.projects[self.current_project].name
+    fn current_project_name(&self) -> Option<&str> {
+        self.current_project.map(|i| self.projects[i].name.as_str())
     }
 
     fn record(&mut self, prompt: &str) {
@@ -420,38 +422,35 @@ fn activate(app: &Application) {
 }
 
 fn build_project_list(config: &Config) -> Result<Vec<Project>, String> {
-    let default_name = config
-        .working_directory
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "default".to_string());
-
-    let mut out = vec![Project {
-        name: default_name,
-        path: config.working_directory.clone(),
-    }];
-
-    for raw in &config.projects {
-        if raw.name.trim().is_empty() {
-            return Err("Each [[projects]] entry needs a non-empty `name`.".to_string());
+    let Some(dir) = config.projects_directory.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if !dir.is_dir() {
+        return Err(format!(
+            "projects_directory is not a directory:\n{}",
+            dir.display()
+        ));
+    }
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read projects_directory {}:\n{}", dir.display(), e))?;
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
         }
-        if !raw.path.is_dir() {
-            return Err(format!(
-                "Project `{}` path is not a directory:\n{}",
-                raw.name,
-                raw.path.display()
-            ));
-        }
-        if raw.path == config.working_directory {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
             continue;
         }
         out.push(Project {
-            name: raw.name.clone(),
-            path: raw.path.clone(),
+            name: name.to_string(),
+            path: path.clone(),
         });
     }
-
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
@@ -507,6 +506,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let state = Rc::new(RefCell::new(State::new(
         load_history(),
         config.history_size,
+        config.working_directory.clone(),
         projects,
         load_slash_commands(),
     )));
@@ -550,10 +550,6 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         .visible(false)
         .build();
     project_label.add_css_class("project-pill");
-    project_label.set_label(&format!(
-        "Target: {}",
-        state.borrow().current_project_name()
-    ));
 
     let outer = Overlay::new();
     outer.set_child(Some(&container));
@@ -632,13 +628,16 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         if is_tab_key && has_ctrl {
             let forward = key == gdk::Key::Tab && !has_shift;
             let mut st = state_for_key.borrow_mut();
-            if !st.project_label_revealed {
-                st.project_label_revealed = true;
-            } else {
-                st.cycle_project(forward);
+            st.cycle_project(forward);
+            match st.current_project_name() {
+                Some(name) => {
+                    project_label_for_key.set_label(&format!("Target: {}", name));
+                    project_label_for_key.set_visible(true);
+                }
+                None => {
+                    project_label_for_key.set_visible(false);
+                }
             }
-            project_label_for_key.set_label(&format!("Target: {}", st.current_project_name()));
-            project_label_for_key.set_visible(true);
             return glib::Propagation::Stop;
         }
 
