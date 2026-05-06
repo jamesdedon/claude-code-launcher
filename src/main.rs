@@ -1,7 +1,7 @@
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, AlertDialog, Align, Application, ApplicationWindow, Box as GtkBox, Button,
-    CssProvider, EventControllerKey, Label, Orientation, PolicyType, PropagationPhase,
+    gdk, gio, glib, AlertDialog, Align, Application, ApplicationWindow, Box as GtkBox,
+    CssProvider, EventControllerKey, Label, Orientation, Overlay, PolicyType, PropagationPhase,
     ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
 };
 use serde::Deserialize;
@@ -23,37 +23,6 @@ box.popup {
     background: rgba(30, 30, 40, 0.92);
     border-radius: 14px;
     border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-box.titlebar {
-    background: rgba(0, 0, 0, 0.35);
-    border-radius: 14px 14px 0 0;
-    padding: 6px 10px;
-    min-height: 22px;
-}
-
-label.titlebar-title {
-    color: rgba(240, 240, 240, 0.65);
-    font-size: 10pt;
-    font-weight: 500;
-}
-
-button.titlebar-close {
-    min-width: 14px;
-    min-height: 14px;
-    padding: 0;
-    border-radius: 50%;
-    background: rgba(255, 95, 86, 0.95);
-    border: none;
-    box-shadow: none;
-    color: transparent;
-}
-
-button.titlebar-close:hover {
-    background: rgba(255, 95, 86, 1);
-}
-
-box.body {
     padding: 10px;
 }
 
@@ -67,6 +36,11 @@ textview, textview text {
     color: #f0f0f0;
     font-size: 14pt;
 }
+
+label.placeholder {
+    color: rgba(240, 240, 240, 0.4);
+    font-size: 14pt;
+}
 ";
 
 #[derive(Deserialize, Debug)]
@@ -78,7 +52,7 @@ struct Config {
 }
 
 fn default_title() -> String {
-    "Claude Code".to_string()
+    "Ask Claude...".to_string()
 }
 
 fn config_path() -> PathBuf {
@@ -164,6 +138,10 @@ fn build_ui(app: &Application, config: &Config) {
     let text_view = TextView::builder()
         .accepts_tab(false)
         .wrap_mode(WrapMode::WordChar)
+        .left_margin(2)
+        .right_margin(2)
+        .top_margin(2)
+        .bottom_margin(2)
         .build();
 
     let scrolled = ScrolledWindow::builder()
@@ -178,33 +156,35 @@ fn build_ui(app: &Application, config: &Config) {
         .child(&text_view)
         .build();
 
-    let body = GtkBox::builder().orientation(Orientation::Vertical).build();
-    body.add_css_class("body");
-    body.append(&scrolled);
-
-    let title_label = Label::builder()
+    let placeholder = Label::builder()
         .label(&config.title)
-        .hexpand(true)
         .halign(Align::Start)
+        .valign(Align::Start)
+        .can_target(false)
+        .margin_start(2)
+        .margin_top(2)
         .build();
-    title_label.add_css_class("titlebar-title");
+    placeholder.add_css_class("placeholder");
 
-    let close_button = Button::builder().halign(Align::End).valign(Align::Center).build();
-    close_button.add_css_class("titlebar-close");
+    let overlay = Overlay::new();
+    overlay.set_child(Some(&scrolled));
+    overlay.add_overlay(&placeholder);
 
-    let titlebar_inner = GtkBox::builder().orientation(Orientation::Horizontal).build();
-    titlebar_inner.add_css_class("titlebar");
-    titlebar_inner.append(&title_label);
-    titlebar_inner.append(&close_button);
-
-    let titlebar = WindowHandle::builder().child(&titlebar_inner).build();
+    let buffer = text_view.buffer();
+    let placeholder_for_buffer = placeholder.clone();
+    let sync_placeholder = move |buf: &gtk4::TextBuffer| {
+        placeholder_for_buffer.set_visible(buf.char_count() == 0);
+    };
+    sync_placeholder(&buffer);
+    buffer.connect_changed(sync_placeholder);
 
     let container = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .build();
     container.add_css_class("popup");
-    container.append(&titlebar);
-    container.append(&body);
+    container.append(&overlay);
+
+    let window_handle = WindowHandle::builder().child(&container).build();
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -212,12 +192,9 @@ fn build_ui(app: &Application, config: &Config) {
         .default_width(560)
         .decorated(false)
         .resizable(false)
-        .child(&container)
+        .child(&window_handle)
         .build();
     window.add_css_class("launcher");
-
-    let window_for_close = window.clone();
-    close_button.connect_clicked(move |_| window_for_close.close());
 
     let working_dir = config.working_directory.clone();
     let terminal_command = config.terminal_command.clone();
