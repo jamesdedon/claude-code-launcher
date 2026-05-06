@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Code Launcher
+Comment=Quick prompt popup that launches Claude Code in your terminal
+Exec=claude-code-launcher
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;Development;
+Keywords=claude;ai;prompt;launcher;
+StartupNotify=false
+NoDisplay=false
