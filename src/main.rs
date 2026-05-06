@@ -62,6 +62,12 @@ struct Config {
     history_size: usize,
     #[serde(default)]
     projects: Vec<RawProject>,
+    #[serde(default = "default_resume_args")]
+    resume_args: Vec<String>,
+}
+
+fn default_resume_args() -> Vec<String> {
+    vec!["--resume".to_string()]
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -386,6 +392,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     window.add_css_class("launcher");
 
     let terminal_command = config.terminal_command.clone();
+    let resume_args = config.resume_args.clone();
     let window_for_key = window.clone();
     let buffer_for_key = text_view.buffer();
     let state_for_key = state.clone();
@@ -411,7 +418,8 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
                 return glib::Propagation::Stop;
             }
             let working_dir = state_for_key.borrow().current_project_path();
-            match launch_terminal(prompt, &working_dir, &terminal_command) {
+            let extra: &[String] = if has_ctrl { &resume_args } else { &[] };
+            match launch_terminal(prompt, &working_dir, &terminal_command, extra) {
                 Ok(_) => {
                     state_for_key.borrow_mut().record(prompt);
                     window_for_key.close();
@@ -507,12 +515,23 @@ fn launch_terminal(
     prompt: &str,
     working_dir: &Path,
     command_template: &[String],
+    extra_args_before_prompt: &[String],
 ) -> std::io::Result<()> {
     let cwd_str = working_dir.to_string_lossy();
-    let args: Vec<String> = command_template
-        .iter()
-        .map(|arg| arg.replace("{cwd}", &cwd_str).replace("{prompt}", prompt))
-        .collect();
+    let mut args: Vec<String> = Vec::with_capacity(
+        command_template.len() + extra_args_before_prompt.len(),
+    );
+    let mut spliced = false;
+    for arg in command_template {
+        if !spliced && arg.contains("{prompt}") && !extra_args_before_prompt.is_empty() {
+            args.extend(extra_args_before_prompt.iter().cloned());
+            spliced = true;
+        }
+        args.push(arg.replace("{cwd}", &cwd_str).replace("{prompt}", prompt));
+    }
+    if !spliced {
+        args.extend(extra_args_before_prompt.iter().cloned());
+    }
 
     build_host_command(&args).spawn()?;
     Ok(())
