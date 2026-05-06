@@ -1,7 +1,8 @@
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, AlertDialog, Application, ApplicationWindow, Box as GtkBox, CssProvider, Entry,
-    EventControllerKey, Orientation, Window,
+    gdk, gio, glib, AlertDialog, Application, ApplicationWindow, Box as GtkBox, CssProvider,
+    EventControllerKey, Orientation, PolicyType, PropagationPhase, ScrolledWindow, TextView,
+    Window, WindowHandle, WrapMode,
 };
 use serde::Deserialize;
 use std::error::Error;
@@ -10,6 +11,8 @@ use std::process::Command;
 use std::{env, fs};
 
 const APP_ID: &str = "dev.dedon.ClaudeCodeLauncher";
+const MAX_HEIGHT: i32 = 320;
+const MIN_HEIGHT: i32 = 48;
 
 const STYLES: &str = "
 window.launcher {
@@ -22,18 +25,15 @@ box.popup {
     padding: 10px;
 }
 
-entry {
+scrolledwindow {
     background: transparent;
     border: none;
-    color: #f0f0f0;
-    font-size: 14pt;
-    padding: 8px;
-    box-shadow: none;
 }
 
-entry:focus {
-    box-shadow: none;
-    outline: none;
+textview, textview text {
+    background: transparent;
+    color: #f0f0f0;
+    font-size: 14pt;
 }
 ";
 
@@ -123,15 +123,30 @@ fn install_css() {
 }
 
 fn build_ui(app: &Application, config: &Config) {
-    let entry = Entry::builder()
-        .placeholder_text("Ask Claude...")
+    let text_view = TextView::builder()
+        .accepts_tab(false)
+        .wrap_mode(WrapMode::WordChar)
+        .build();
+
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .propagate_natural_width(true)
+        .max_content_height(MAX_HEIGHT)
+        .min_content_height(MIN_HEIGHT)
+        .max_content_width(540)
+        .min_content_width(540)
+        .child(&text_view)
         .build();
 
     let container = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .build();
     container.add_css_class("popup");
-    container.append(&entry);
+    container.append(&scrolled);
+
+    let handle = WindowHandle::builder().child(&container).build();
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -139,39 +154,45 @@ fn build_ui(app: &Application, config: &Config) {
         .default_width(560)
         .decorated(false)
         .resizable(false)
-        .child(&container)
+        .child(&handle)
         .build();
     window.add_css_class("launcher");
 
     let working_dir = config.working_directory.clone();
     let terminal_command = config.terminal_command.clone();
-    let window_for_submit = window.clone();
-    entry.connect_activate(move |entry| {
-        let text = entry.text();
-        let prompt = text.trim();
-        if prompt.is_empty() {
-            return;
-        }
-        match launch_terminal(prompt, &working_dir, &terminal_command) {
-            Ok(_) => window_for_submit.close(),
-            Err(e) => show_error(&window_for_submit, "Failed to launch", &e.to_string()),
-        }
-    });
+    let window_for_key = window.clone();
+    let buffer = text_view.buffer();
 
     let key_controller = EventControllerKey::new();
-    let window_for_esc = window.clone();
-    key_controller.connect_key_pressed(move |_, key, _, _| {
+    key_controller.set_propagation_phase(PropagationPhase::Capture);
+    key_controller.connect_key_pressed(move |_, key, _, modifiers| {
         if key == gdk::Key::Escape {
-            window_for_esc.close();
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
+            window_for_key.close();
+            return glib::Propagation::Stop;
         }
+
+        let is_enter = key == gdk::Key::Return || key == gdk::Key::KP_Enter;
+        let has_shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        if is_enter && !has_shift {
+            let (start, end) = buffer.bounds();
+            let text = buffer.text(&start, &end, false);
+            let prompt = text.trim();
+            if prompt.is_empty() {
+                return glib::Propagation::Stop;
+            }
+            match launch_terminal(prompt, &working_dir, &terminal_command) {
+                Ok(_) => window_for_key.close(),
+                Err(e) => show_error(&window_for_key, "Failed to launch", &e.to_string()),
+            }
+            return glib::Propagation::Stop;
+        }
+
+        glib::Propagation::Proceed
     });
-    window.add_controller(key_controller);
+    text_view.add_controller(key_controller);
 
     window.present();
-    entry.grab_focus();
+    text_view.grab_focus();
 }
 
 fn launch_terminal(
