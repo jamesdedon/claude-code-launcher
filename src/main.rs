@@ -50,7 +50,24 @@ label.project {
     margin-bottom: 4px;
     margin-start: 2px;
 }
+
+box.completions {
+    margin-top: 6px;
+}
+
+label.completion {
+    color: rgba(240, 240, 240, 0.85);
+    font-size: 11pt;
+    padding: 4px 6px;
+    border-radius: 6px;
+}
+
+label.completion.selected {
+    background: rgba(255, 255, 255, 0.10);
+}
 ";
+
+const MAX_COMPLETIONS_SHOWN: usize = 8;
 
 #[derive(Deserialize, Debug)]
 struct Config {
@@ -138,6 +155,28 @@ fn load_history() -> Vec<String> {
     }
 }
 
+fn load_slash_commands() -> Vec<String> {
+    let Some(home) = env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let dir = PathBuf::from(home).join(".claude").join("commands");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            out.push(stem.to_string());
+        }
+    }
+    out.sort();
+    out
+}
+
 fn save_history(entries: &[String]) {
     let path = history_path();
     if let Some(parent) = path.parent() {
@@ -159,10 +198,18 @@ struct State {
     suppress_change: bool,
     projects: Vec<Project>,
     current_project: usize,
+    commands: Vec<String>,
+    visible_completions: Vec<usize>,
+    selected_completion: usize,
 }
 
 impl State {
-    fn new(history: Vec<String>, history_size: usize, projects: Vec<Project>) -> Self {
+    fn new(
+        history: Vec<String>,
+        history_size: usize,
+        projects: Vec<Project>,
+        commands: Vec<String>,
+    ) -> Self {
         Self {
             history,
             history_size,
@@ -171,7 +218,47 @@ impl State {
             suppress_change: false,
             projects,
             current_project: 0,
+            commands,
+            visible_completions: Vec::new(),
+            selected_completion: 0,
         }
+    }
+
+    fn completions_visible(&self) -> bool {
+        !self.visible_completions.is_empty()
+    }
+
+    fn update_completions(&mut self, buffer_text: &str) {
+        self.visible_completions.clear();
+        self.selected_completion = 0;
+        let Some(slug) = slash_slug(buffer_text) else {
+            return;
+        };
+        for (i, name) in self.commands.iter().enumerate() {
+            if name.starts_with(slug) {
+                self.visible_completions.push(i);
+                if self.visible_completions.len() >= MAX_COMPLETIONS_SHOWN {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn move_completion(&mut self, forward: bool) {
+        if self.visible_completions.is_empty() {
+            return;
+        }
+        let n = self.visible_completions.len();
+        self.selected_completion = if forward {
+            (self.selected_completion + 1) % n
+        } else {
+            (self.selected_completion + n - 1) % n
+        };
+    }
+
+    fn selected_command_name(&self) -> Option<&str> {
+        let idx = *self.visible_completions.get(self.selected_completion)?;
+        Some(self.commands[idx].as_str())
     }
 
     fn cycle_project(&mut self, forward: bool) {
@@ -209,6 +296,16 @@ impl State {
         }
         save_history(&self.history);
     }
+}
+
+fn slash_slug(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('/')?;
+    let end = rest
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, _)| i)
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
 }
 
 fn main() -> glib::ExitCode {
@@ -350,16 +447,28 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         load_history(),
         config.history_size,
         projects,
+        load_slash_commands(),
     )));
+
+    let completions_box = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .visible(false)
+        .build();
+    completions_box.add_css_class("completions");
 
     let placeholder_for_buffer = placeholder.clone();
     let state_for_change = state.clone();
+    let completions_for_change = completions_box.clone();
     buffer.connect_changed(move |buf| {
         placeholder_for_buffer.set_visible(buf.char_count() == 0);
         let mut st = state_for_change.borrow_mut();
         if !st.suppress_change {
             st.history_index = None;
+            let (s, e) = buf.bounds();
+            let text = buf.text(&s, &e, false).to_string();
+            st.update_completions(&text);
         }
+        render_completions(&completions_for_change, &st);
     });
     placeholder.set_visible(buffer.char_count() == 0);
 
@@ -378,6 +487,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     container.append(&project_label);
 
     container.append(&overlay);
+    container.append(&completions_box);
 
     let window_handle = WindowHandle::builder().child(&container).build();
 
@@ -397,18 +507,35 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let buffer_for_key = text_view.buffer();
     let state_for_key = state.clone();
     let project_label_for_key = project_label.clone();
+    let completions_for_key = completions_box.clone();
 
     let key_controller = EventControllerKey::new();
     key_controller.set_propagation_phase(PropagationPhase::Capture);
     key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+        let has_shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        let has_ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+
         if key == gdk::Key::Escape {
+            let visible = state_for_key.borrow().completions_visible();
+            if visible {
+                let mut st = state_for_key.borrow_mut();
+                st.visible_completions.clear();
+                render_completions(&completions_for_key, &st);
+                return glib::Propagation::Stop;
+            }
             window_for_key.close();
             return glib::Propagation::Stop;
         }
 
+        let is_tab_key = key == gdk::Key::Tab || key == gdk::Key::ISO_Left_Tab;
+        if is_tab_key && !has_ctrl {
+            if state_for_key.borrow().completions_visible() {
+                accept_completion(&state_for_key, &buffer_for_key, &completions_for_key);
+                return glib::Propagation::Stop;
+            }
+        }
+
         let is_enter = key == gdk::Key::Return || key == gdk::Key::KP_Enter;
-        let has_shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
-        let has_ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
 
         if is_enter && !has_shift {
             let (start, end) = buffer_for_key.bounds();
@@ -429,8 +556,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
             return glib::Propagation::Stop;
         }
 
-        let is_tab = key == gdk::Key::Tab || key == gdk::Key::ISO_Left_Tab;
-        if is_tab && has_ctrl {
+        if is_tab_key && has_ctrl {
             let forward = key == gdk::Key::Tab && !has_shift;
             let mut st = state_for_key.borrow_mut();
             st.cycle_project(forward);
@@ -441,6 +567,12 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         let is_up = key == gdk::Key::Up || key == gdk::Key::KP_Up;
         let is_down = key == gdk::Key::Down || key == gdk::Key::KP_Down;
         if (is_up || is_down) && !has_ctrl && !has_shift {
+            if state_for_key.borrow().completions_visible() {
+                let mut st = state_for_key.borrow_mut();
+                st.move_completion(is_down);
+                render_completions(&completions_for_key, &st);
+                return glib::Propagation::Stop;
+            }
             if try_history_nav(&state_for_key, &buffer_for_key, is_up) {
                 return glib::Propagation::Stop;
             }
@@ -452,6 +584,78 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
 
     window.present();
     text_view.grab_focus();
+}
+
+fn render_completions(container: &GtkBox, state: &State) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    if state.visible_completions.is_empty() {
+        container.set_visible(false);
+        return;
+    }
+    for (row_idx, &cmd_idx) in state.visible_completions.iter().enumerate() {
+        let row = Label::builder()
+            .label(format!("/{}", state.commands[cmd_idx]))
+            .halign(Align::Start)
+            .can_target(false)
+            .build();
+        row.add_css_class("completion");
+        if row_idx == state.selected_completion {
+            row.add_css_class("selected");
+        }
+        container.append(&row);
+    }
+    container.set_visible(true);
+}
+
+fn accept_completion(
+    state: &Rc<RefCell<State>>,
+    buffer: &gtk4::TextBuffer,
+    completions_box: &GtkBox,
+) {
+    let (cmd_name, slug_len) = {
+        let st = state.borrow();
+        let Some(name) = st.selected_command_name() else {
+            return;
+        };
+        let (s, e) = buffer.bounds();
+        let text = buffer.text(&s, &e, false).to_string();
+        let Some(slug) = slash_slug(&text) else {
+            return;
+        };
+        (name.to_string(), slug.len())
+    };
+
+    let mut st = state.borrow_mut();
+    st.suppress_change = true;
+    drop(st);
+
+    let mut start = buffer.start_iter();
+    let mut end = buffer.start_iter();
+    end.forward_chars((slug_len + 1) as i32); // +1 for leading '/'
+    buffer.delete(&mut start, &mut end);
+
+    let mut insert_iter = buffer.start_iter();
+    let (_, e_iter) = buffer.bounds();
+    let after_text = buffer.text(&insert_iter, &e_iter, false);
+    let needs_space = !after_text
+        .chars()
+        .next()
+        .map(|c| c.is_whitespace())
+        .unwrap_or(false);
+    let inserted = if needs_space {
+        format!("/{} ", cmd_name)
+    } else {
+        format!("/{}", cmd_name)
+    };
+    buffer.insert(&mut insert_iter, &inserted);
+    buffer.place_cursor(&insert_iter);
+
+    let mut st = state.borrow_mut();
+    st.suppress_change = false;
+    st.visible_completions.clear();
+    render_completions(completions_box, &st);
 }
 
 fn try_history_nav(
