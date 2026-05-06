@@ -541,14 +541,17 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
             let (start, end) = buffer_for_key.bounds();
             let text = buffer_for_key.text(&start, &end, false);
             let prompt = text.trim();
-            if prompt.is_empty() {
+            if prompt.is_empty() && !has_ctrl {
                 return glib::Propagation::Stop;
             }
+            let prompt_opt = (!prompt.is_empty()).then_some(prompt);
             let working_dir = state_for_key.borrow().current_project_path();
             let extra: &[String] = if has_ctrl { &resume_args } else { &[] };
-            match launch_terminal(prompt, &working_dir, &terminal_command, extra) {
+            match launch_terminal(prompt_opt, &working_dir, &terminal_command, extra) {
                 Ok(_) => {
-                    state_for_key.borrow_mut().record(prompt);
+                    if let Some(p) = prompt_opt {
+                        state_for_key.borrow_mut().record(p);
+                    }
                     window_for_key.close();
                 }
                 Err(e) => show_error(&window_for_key, "Failed to launch", &e.to_string()),
@@ -716,7 +719,7 @@ fn try_history_nav(
 }
 
 fn launch_terminal(
-    prompt: &str,
+    prompt: Option<&str>,
     working_dir: &Path,
     command_template: &[String],
     extra_args_before_prompt: &[String],
@@ -731,7 +734,17 @@ fn launch_terminal(
             args.extend(extra_args_before_prompt.iter().cloned());
             spliced = true;
         }
-        args.push(arg.replace("{cwd}", &cwd_str).replace("{prompt}", prompt));
+        match prompt {
+            Some(p) => {
+                args.push(arg.replace("{cwd}", &cwd_str).replace("{prompt}", p));
+            }
+            None => {
+                if arg == "{prompt}" {
+                    continue;
+                }
+                args.push(arg.replace("{cwd}", &cwd_str).replace("{prompt}", ""));
+            }
+        }
     }
     if !spliced {
         args.extend(extra_args_before_prompt.iter().cloned());
