@@ -11,13 +11,23 @@ Bind it to a global hotkey, type a prompt, hit Enter — your terminal opens wit
 - A terminal emulator of your choice
 - The `claude` CLI on your PATH
 
-## Build & install
+## Install
+
+From crates.io-style remote:
 
 ```sh
+cargo install --git https://github.com/jamesdedon/claude-code-launcher --root ~/.local
+```
+
+Or from a local checkout:
+
+```sh
+git clone https://github.com/jamesdedon/claude-code-launcher
+cd claude-code-launcher
 cargo install --path . --root ~/.local
 ```
 
-This compiles a release binary and installs it to `~/.local/bin/claude-code-launcher`. Make sure `~/.local/bin` is on your `PATH`.
+Either compiles a release binary and installs it to `~/.local/bin/claude-code-launcher`. Make sure `~/.local/bin` is on your `PATH`.
 
 ## Configuration
 
