@@ -16,7 +16,7 @@ Bind it to a global hotkey, type a prompt, hit Enter — your terminal opens wit
 From crates.io-style remote:
 
 ```sh
-cargo install --git https://github.com/jamesdedon/claude-code-launcher --root ~/.local
+cargo install --git https://github.com/jamesdedon/claude-code-launcher
 ```
 
 Or from a local checkout:
@@ -24,10 +24,10 @@ Or from a local checkout:
 ```sh
 git clone https://github.com/jamesdedon/claude-code-launcher
 cd claude-code-launcher
-cargo install --path . --root ~/.local
+cargo install --path .
 ```
 
-Either compiles a release binary and installs it to `~/.local/bin/claude-code-launcher`. Make sure `~/.local/bin` is on your `PATH`.
+Either compiles a release binary and installs it to `~/.cargo/bin/claude-code-launcher`. Make sure `~/.cargo/bin` is on your `PATH`.
 
 ## Configuration
 
@@ -68,7 +68,7 @@ terminal_command = ["wezterm", "start", "--cwd", "{cwd}", "--", "claude", "{prom
 2. Click **Add Shortcut**.
 3. Fill in:
    - **Name**: Claude Code Launcher
-   - **Command**: `claude-code-launcher` (or full path `/home/you/.local/bin/claude-code-launcher`)
+   - **Command**: `claude-code-launcher` (or full path `/home/you/.cargo/bin/claude-code-launcher`)
    - **Shortcut**: pick something free — `Super+Return`, `Ctrl+Alt+Space`, `Super+/`, etc. (`Super+Space` is taken by GNOME's overview.)
 4. Hit your shortcut. The popup should appear.
 
