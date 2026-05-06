@@ -1,8 +1,8 @@
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, AlertDialog, Application, ApplicationWindow, Box as GtkBox, CssProvider,
-    EventControllerKey, Orientation, PolicyType, PropagationPhase, ScrolledWindow, TextView,
-    Window, WindowHandle, WrapMode,
+    gdk, gio, glib, AlertDialog, Align, Application, ApplicationWindow, Box as GtkBox, Button,
+    CssProvider, EventControllerKey, Label, Orientation, PolicyType, PropagationPhase,
+    ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
 };
 use serde::Deserialize;
 use std::error::Error;
@@ -20,8 +20,40 @@ window.launcher {
 }
 
 box.popup {
-    background: rgba(30, 30, 40, 0.88);
+    background: rgba(30, 30, 40, 0.92);
     border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+box.titlebar {
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 14px 14px 0 0;
+    padding: 6px 10px;
+    min-height: 22px;
+}
+
+label.titlebar-title {
+    color: rgba(240, 240, 240, 0.65);
+    font-size: 10pt;
+    font-weight: 500;
+}
+
+button.titlebar-close {
+    min-width: 14px;
+    min-height: 14px;
+    padding: 0;
+    border-radius: 50%;
+    background: rgba(255, 95, 86, 0.95);
+    border: none;
+    box-shadow: none;
+    color: transparent;
+}
+
+button.titlebar-close:hover {
+    background: rgba(255, 95, 86, 1);
+}
+
+box.body {
     padding: 10px;
 }
 
@@ -41,6 +73,12 @@ textview, textview text {
 struct Config {
     working_directory: PathBuf,
     terminal_command: Vec<String>,
+    #[serde(default = "default_title")]
+    title: String,
+}
+
+fn default_title() -> String {
+    "Claude Code".to_string()
 }
 
 fn config_path() -> PathBuf {
@@ -140,13 +178,33 @@ fn build_ui(app: &Application, config: &Config) {
         .child(&text_view)
         .build();
 
+    let body = GtkBox::builder().orientation(Orientation::Vertical).build();
+    body.add_css_class("body");
+    body.append(&scrolled);
+
+    let title_label = Label::builder()
+        .label(&config.title)
+        .hexpand(true)
+        .halign(Align::Start)
+        .build();
+    title_label.add_css_class("titlebar-title");
+
+    let close_button = Button::builder().halign(Align::End).valign(Align::Center).build();
+    close_button.add_css_class("titlebar-close");
+
+    let titlebar_inner = GtkBox::builder().orientation(Orientation::Horizontal).build();
+    titlebar_inner.add_css_class("titlebar");
+    titlebar_inner.append(&title_label);
+    titlebar_inner.append(&close_button);
+
+    let titlebar = WindowHandle::builder().child(&titlebar_inner).build();
+
     let container = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .build();
     container.add_css_class("popup");
-    container.append(&scrolled);
-
-    let handle = WindowHandle::builder().child(&container).build();
+    container.append(&titlebar);
+    container.append(&body);
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -154,9 +212,12 @@ fn build_ui(app: &Application, config: &Config) {
         .default_width(560)
         .decorated(false)
         .resizable(false)
-        .child(&handle)
+        .child(&container)
         .build();
     window.add_css_class("launcher");
+
+    let window_for_close = window.clone();
+    close_button.connect_clicked(move |_| window_for_close.close());
 
     let working_dir = config.working_directory.clone();
     let terminal_command = config.terminal_command.clone();
