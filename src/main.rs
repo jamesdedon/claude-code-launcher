@@ -48,12 +48,9 @@ fn build_styles(theme: &Theme) -> String {
         .placeholder_text
         .as_deref()
         .unwrap_or("rgba(240, 240, 240, 0.4)");
-    let pill_background = theme.pill_background.as_deref().unwrap_or("#f5c518");
-    let pill_text = theme.pill_text.as_deref().unwrap_or("#1a1a1a");
-    let pill_border = theme
-        .pill_border
-        .as_deref()
-        .unwrap_or("rgba(0, 0, 0, 0.25)");
+    let pill_background = theme.pill_background.as_deref().unwrap_or(popup_background);
+    let pill_text = theme.pill_text.as_deref().unwrap_or(popup_text);
+    let pill_border = theme.pill_border.as_deref().unwrap_or(popup_border);
     let completion_text = theme
         .completion_text
         .as_deref()
@@ -210,9 +207,9 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 # popup_border = "rgba(255, 255, 255, 0.06)"
 # popup_text = "#f0f0f0"
 # placeholder_text = "rgba(240, 240, 240, 0.4)"
-# pill_background = "#f5c518"
-# pill_text = "#1a1a1a"
-# pill_border = "rgba(0, 0, 0, 0.25)"
+# pill_background = "#f5c518"   # default: matches popup_background
+# pill_text = "#1a1a1a"          # default: matches popup_text
+# pill_border = "rgba(0, 0, 0, 0.25)"  # default: matches popup_border
 # completion_text = "rgba(240, 240, 240, 0.85)"
 # completion_selected_background = "rgba(255, 255, 255, 0.10)"
 # font_size = "14pt"
