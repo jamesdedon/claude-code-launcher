@@ -43,6 +43,13 @@ label.placeholder {
     color: rgba(240, 240, 240, 0.4);
     font-size: 14pt;
 }
+
+label.project {
+    color: rgba(240, 240, 240, 0.55);
+    font-size: 10pt;
+    margin-bottom: 4px;
+    margin-start: 2px;
+}
 ";
 
 #[derive(Deserialize, Debug)]
@@ -53,6 +60,20 @@ struct Config {
     title: String,
     #[serde(default = "default_history_size")]
     history_size: usize,
+    #[serde(default)]
+    projects: Vec<RawProject>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct RawProject {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct Project {
+    name: String,
+    path: PathBuf,
 }
 
 fn default_title() -> String {
@@ -130,17 +151,41 @@ struct State {
     history_index: Option<usize>,
     draft: String,
     suppress_change: bool,
+    projects: Vec<Project>,
+    current_project: usize,
 }
 
 impl State {
-    fn new(history: Vec<String>, history_size: usize) -> Self {
+    fn new(history: Vec<String>, history_size: usize, projects: Vec<Project>) -> Self {
         Self {
             history,
             history_size,
             history_index: None,
             draft: String::new(),
             suppress_change: false,
+            projects,
+            current_project: 0,
         }
+    }
+
+    fn cycle_project(&mut self, forward: bool) {
+        if self.projects.len() <= 1 {
+            return;
+        }
+        let n = self.projects.len();
+        self.current_project = if forward {
+            (self.current_project + 1) % n
+        } else {
+            (self.current_project + n - 1) % n
+        };
+    }
+
+    fn current_project_path(&self) -> PathBuf {
+        self.projects[self.current_project].path.clone()
+    }
+
+    fn current_project_name(&self) -> &str {
+        &self.projects[self.current_project].name
     }
 
     fn record(&mut self, prompt: &str) {
@@ -207,7 +252,42 @@ fn activate(app: &Application) {
         return;
     }
 
-    build_ui(app, &config);
+    let projects = match build_project_list(&config) {
+        Ok(p) => p,
+        Err(msg) => {
+            show_startup_error(app, "Invalid project configuration", &msg);
+            return;
+        }
+    };
+
+    build_ui(app, &config, projects);
+}
+
+fn build_project_list(config: &Config) -> Result<Vec<Project>, String> {
+    if config.projects.is_empty() {
+        return Ok(vec![Project {
+            name: "default".to_string(),
+            path: config.working_directory.clone(),
+        }]);
+    }
+    let mut out = Vec::with_capacity(config.projects.len());
+    for raw in &config.projects {
+        if raw.name.trim().is_empty() {
+            return Err("Each [[projects]] entry needs a non-empty `name`.".to_string());
+        }
+        if !raw.path.is_dir() {
+            return Err(format!(
+                "Project `{}` path is not a directory:\n{}",
+                raw.name,
+                raw.path.display()
+            ));
+        }
+        out.push(Project {
+            name: raw.name.clone(),
+            path: raw.path.clone(),
+        });
+    }
+    Ok(out)
 }
 
 fn install_css() {
@@ -222,7 +302,7 @@ fn install_css() {
     }
 }
 
-fn build_ui(app: &Application, config: &Config) {
+fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let text_view = TextView::builder()
         .accepts_tab(false)
         .wrap_mode(WrapMode::WordChar)
@@ -259,9 +339,11 @@ fn build_ui(app: &Application, config: &Config) {
     overlay.add_overlay(&placeholder);
 
     let buffer = text_view.buffer();
+    let multi_project = projects.len() > 1;
     let state = Rc::new(RefCell::new(State::new(
         load_history(),
         config.history_size,
+        projects,
     )));
 
     let placeholder_for_buffer = placeholder.clone();
@@ -279,6 +361,16 @@ fn build_ui(app: &Application, config: &Config) {
         .orientation(Orientation::Vertical)
         .build();
     container.add_css_class("popup");
+
+    let project_label = Label::builder()
+        .halign(Align::Start)
+        .can_target(false)
+        .visible(multi_project)
+        .build();
+    project_label.add_css_class("project");
+    project_label.set_label(state.borrow().current_project_name());
+    container.append(&project_label);
+
     container.append(&overlay);
 
     let window_handle = WindowHandle::builder().child(&container).build();
@@ -293,11 +385,11 @@ fn build_ui(app: &Application, config: &Config) {
         .build();
     window.add_css_class("launcher");
 
-    let working_dir = config.working_directory.clone();
     let terminal_command = config.terminal_command.clone();
     let window_for_key = window.clone();
     let buffer_for_key = text_view.buffer();
     let state_for_key = state.clone();
+    let project_label_for_key = project_label.clone();
 
     let key_controller = EventControllerKey::new();
     key_controller.set_propagation_phase(PropagationPhase::Capture);
@@ -318,6 +410,7 @@ fn build_ui(app: &Application, config: &Config) {
             if prompt.is_empty() {
                 return glib::Propagation::Stop;
             }
+            let working_dir = state_for_key.borrow().current_project_path();
             match launch_terminal(prompt, &working_dir, &terminal_command) {
                 Ok(_) => {
                     state_for_key.borrow_mut().record(prompt);
@@ -325,6 +418,15 @@ fn build_ui(app: &Application, config: &Config) {
                 }
                 Err(e) => show_error(&window_for_key, "Failed to launch", &e.to_string()),
             }
+            return glib::Propagation::Stop;
+        }
+
+        let is_tab = key == gdk::Key::Tab || key == gdk::Key::ISO_Left_Tab;
+        if is_tab && has_ctrl {
+            let forward = key == gdk::Key::Tab && !has_shift;
+            let mut st = state_for_key.borrow_mut();
+            st.cycle_project(forward);
+            project_label_for_key.set_label(st.current_project_name());
             return glib::Propagation::Stop;
         }
 
