@@ -44,11 +44,14 @@ label.placeholder {
     font-size: 14pt;
 }
 
-label.project {
-    color: rgba(240, 240, 240, 0.55);
-    font-size: 10pt;
-    margin-bottom: 4px;
-    margin-start: 2px;
+label.project-pill {
+    background: #f5c518;
+    color: #1a1a1a;
+    font-size: 11pt;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 0, 0, 0.25);
 }
 
 box.completions {
@@ -534,25 +537,34 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         .orientation(Orientation::Vertical)
         .build();
     container.add_css_class("popup");
-
-    let project_label = Label::builder()
-        .halign(Align::Start)
-        .can_target(false)
-        .visible(false)
-        .build();
-    project_label.add_css_class("project");
-    project_label.set_label(state.borrow().current_project_name());
-    container.append(&project_label);
+    container.set_margin_end(8);
+    container.set_margin_bottom(8);
 
     container.append(&overlay);
     container.append(&completions_box);
 
-    let window_handle = WindowHandle::builder().child(&container).build();
+    let project_label = Label::builder()
+        .halign(Align::End)
+        .valign(Align::End)
+        .can_target(false)
+        .visible(false)
+        .build();
+    project_label.add_css_class("project-pill");
+    project_label.set_label(&format!(
+        "Target: {}",
+        state.borrow().current_project_name()
+    ));
+
+    let outer = Overlay::new();
+    outer.set_child(Some(&container));
+    outer.add_overlay(&project_label);
+
+    let window_handle = WindowHandle::builder().child(&outer).build();
 
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Claude Code Launcher")
-        .default_width(560)
+        .default_width(568)
         .decorated(false)
         .resizable(false)
         .child(&window_handle)
@@ -625,7 +637,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
             } else {
                 st.cycle_project(forward);
             }
-            project_label_for_key.set_label(st.current_project_name());
+            project_label_for_key.set_label(&format!("Target: {}", st.current_project_name()));
             project_label_for_key.set_visible(true);
             return glib::Propagation::Stop;
         }
