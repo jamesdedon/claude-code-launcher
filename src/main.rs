@@ -4,10 +4,12 @@ use gtk4::{
     CssProvider, EventControllerKey, Label, Orientation, Overlay, PolicyType, PropagationPhase,
     ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::{env, fs};
 
 const APP_ID: &str = "dev.dedon.ClaudeCodeLauncher";
@@ -49,10 +51,16 @@ struct Config {
     terminal_command: Vec<String>,
     #[serde(default = "default_title")]
     title: String,
+    #[serde(default = "default_history_size")]
+    history_size: usize,
 }
 
 fn default_title() -> String {
     "Ask Claude...".to_string()
+}
+
+fn default_history_size() -> usize {
+    100
 }
 
 fn config_path() -> PathBuf {
@@ -65,11 +73,91 @@ fn config_path() -> PathBuf {
     base.join("claude-code-launcher").join("config.toml")
 }
 
+fn state_dir() -> PathBuf {
+    let base = env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = env::var_os("HOME").expect("HOME env var not set");
+            PathBuf::from(home).join(".local").join("state")
+        });
+    base.join("claude-code-launcher")
+}
+
+fn history_path() -> PathBuf {
+    state_dir().join("history.toml")
+}
+
 fn load_config() -> Result<Config, Box<dyn Error>> {
     let path = config_path();
     let contents = fs::read_to_string(&path)?;
     let config: Config = toml::from_str(&contents)?;
     Ok(config)
+}
+
+#[derive(Deserialize, Serialize, Default, Debug)]
+struct HistoryFile {
+    #[serde(default)]
+    entries: Vec<String>,
+}
+
+fn load_history() -> Vec<String> {
+    let path = history_path();
+    let Ok(contents) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    match toml::from_str::<HistoryFile>(&contents) {
+        Ok(h) => h.entries,
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_history(entries: &[String]) {
+    let path = history_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let file = HistoryFile {
+        entries: entries.to_vec(),
+    };
+    if let Ok(s) = toml::to_string(&file) {
+        let _ = fs::write(&path, s);
+    }
+}
+
+struct State {
+    history: Vec<String>,
+    history_size: usize,
+    history_index: Option<usize>,
+    draft: String,
+    suppress_change: bool,
+}
+
+impl State {
+    fn new(history: Vec<String>, history_size: usize) -> Self {
+        Self {
+            history,
+            history_size,
+            history_index: None,
+            draft: String::new(),
+            suppress_change: false,
+        }
+    }
+
+    fn record(&mut self, prompt: &str) {
+        if prompt.is_empty() {
+            return;
+        }
+        if self.history.last().map(String::as_str) == Some(prompt) {
+            return;
+        }
+        self.history.push(prompt.to_string());
+        let max = self.history_size.max(1);
+        if self.history.len() > max {
+            let drop = self.history.len() - max;
+            self.history.drain(0..drop);
+        }
+        save_history(&self.history);
+    }
 }
 
 fn main() -> glib::ExitCode {
@@ -171,12 +259,21 @@ fn build_ui(app: &Application, config: &Config) {
     overlay.add_overlay(&placeholder);
 
     let buffer = text_view.buffer();
+    let state = Rc::new(RefCell::new(State::new(
+        load_history(),
+        config.history_size,
+    )));
+
     let placeholder_for_buffer = placeholder.clone();
-    let sync_placeholder = move |buf: &gtk4::TextBuffer| {
+    let state_for_change = state.clone();
+    buffer.connect_changed(move |buf| {
         placeholder_for_buffer.set_visible(buf.char_count() == 0);
-    };
-    sync_placeholder(&buffer);
-    buffer.connect_changed(sync_placeholder);
+        let mut st = state_for_change.borrow_mut();
+        if !st.suppress_change {
+            st.history_index = None;
+        }
+    });
+    placeholder.set_visible(buffer.char_count() == 0);
 
     let container = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -199,7 +296,8 @@ fn build_ui(app: &Application, config: &Config) {
     let working_dir = config.working_directory.clone();
     let terminal_command = config.terminal_command.clone();
     let window_for_key = window.clone();
-    let buffer = text_view.buffer();
+    let buffer_for_key = text_view.buffer();
+    let state_for_key = state.clone();
 
     let key_controller = EventControllerKey::new();
     key_controller.set_propagation_phase(PropagationPhase::Capture);
@@ -211,18 +309,31 @@ fn build_ui(app: &Application, config: &Config) {
 
         let is_enter = key == gdk::Key::Return || key == gdk::Key::KP_Enter;
         let has_shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        let has_ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+
         if is_enter && !has_shift {
-            let (start, end) = buffer.bounds();
-            let text = buffer.text(&start, &end, false);
+            let (start, end) = buffer_for_key.bounds();
+            let text = buffer_for_key.text(&start, &end, false);
             let prompt = text.trim();
             if prompt.is_empty() {
                 return glib::Propagation::Stop;
             }
             match launch_terminal(prompt, &working_dir, &terminal_command) {
-                Ok(_) => window_for_key.close(),
+                Ok(_) => {
+                    state_for_key.borrow_mut().record(prompt);
+                    window_for_key.close();
+                }
                 Err(e) => show_error(&window_for_key, "Failed to launch", &e.to_string()),
             }
             return glib::Propagation::Stop;
+        }
+
+        let is_up = key == gdk::Key::Up || key == gdk::Key::KP_Up;
+        let is_down = key == gdk::Key::Down || key == gdk::Key::KP_Down;
+        if (is_up || is_down) && !has_ctrl && !has_shift {
+            if try_history_nav(&state_for_key, &buffer_for_key, is_up) {
+                return glib::Propagation::Stop;
+            }
         }
 
         glib::Propagation::Proceed
@@ -231,6 +342,63 @@ fn build_ui(app: &Application, config: &Config) {
 
     window.present();
     text_view.grab_focus();
+}
+
+fn try_history_nav(
+    state: &Rc<RefCell<State>>,
+    buffer: &gtk4::TextBuffer,
+    going_older: bool,
+) -> bool {
+    let cursor_iter = buffer.iter_at_mark(&buffer.get_insert());
+    let cursor_line = cursor_iter.line();
+    let last_line = buffer.line_count() - 1;
+    let at_first = cursor_line == 0;
+    let at_last = cursor_line == last_line;
+
+    if going_older && !at_first {
+        return false;
+    }
+    if !going_older && !at_last {
+        return false;
+    }
+
+    let mut st = state.borrow_mut();
+    if st.history.is_empty() {
+        return false;
+    }
+
+    let new_index: Option<usize> = if going_older {
+        match st.history_index {
+            None => {
+                let (s, e) = buffer.bounds();
+                st.draft = buffer.text(&s, &e, false).to_string();
+                Some(st.history.len() - 1)
+            }
+            Some(0) => return true,
+            Some(i) => Some(i - 1),
+        }
+    } else {
+        match st.history_index {
+            None => return true,
+            Some(i) if i + 1 >= st.history.len() => None,
+            Some(i) => Some(i + 1),
+        }
+    };
+
+    let text = match new_index {
+        Some(i) => st.history[i].clone(),
+        None => std::mem::take(&mut st.draft),
+    };
+    st.history_index = new_index;
+    st.suppress_change = true;
+    drop(st);
+
+    buffer.set_text(&text);
+    let end = buffer.end_iter();
+    buffer.place_cursor(&end);
+
+    state.borrow_mut().suppress_change = false;
+    true
 }
 
 fn launch_terminal(
