@@ -1,8 +1,8 @@
 use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, AlertDialog, Align, Application, ApplicationWindow, Box as GtkBox,
-    CssProvider, EventControllerKey, Label, Orientation, Overlay, PolicyType, PropagationPhase,
-    ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
+    CssProvider, EventControllerKey, EventControllerLegacy, Label, Orientation, Overlay,
+    PolicyType, PropagationPhase, ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
@@ -725,13 +725,31 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     });
     text_view.add_controller(key_controller);
 
+    let suppress_close = Rc::new(Cell::new(false));
+    let suppress_for_press = suppress_close.clone();
+    let press_controller = EventControllerLegacy::new();
+    press_controller.set_propagation_phase(PropagationPhase::Capture);
+    press_controller.connect_event(move |_, event| {
+        if event.event_type() == gdk::EventType::ButtonPress {
+            suppress_for_press.set(true);
+        }
+        glib::Propagation::Proceed
+    });
+    window.add_controller(press_controller);
+
     let buffer_for_active = text_view.buffer();
     let was_active = Rc::new(Cell::new(false));
     window.connect_is_active_notify(move |w| {
         if w.is_active() {
             was_active.set(true);
-        } else if was_active.get() && buffer_for_active.char_count() == 0 {
-            w.close();
+        } else if was_active.get() {
+            if suppress_close.get() {
+                suppress_close.set(false);
+                return;
+            }
+            if buffer_for_active.char_count() == 0 {
+                w.close();
+            }
         }
     });
 
