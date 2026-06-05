@@ -17,10 +17,12 @@
 pub mod content;
 pub mod little_guy;
 pub mod motion;
+pub mod racer;
 pub mod stage;
 
 pub use content::{Content, Play, SpriteContent};
 pub use little_guy::VectorGuy;
+pub use racer::Racer;
 pub use motion::{Approach, Lifecycle, Spring, Staged};
 pub use stage::{Anchor, Dir, Stage};
 
@@ -86,6 +88,11 @@ pub struct AnimSpec {
     /// "once" | "loop" | "hold". Overrides the animation's default lifecycle.
     #[serde(default)]
     pub cycle: Option<String>,
+    /// "spawn" (on open) | "submit" (on Enter). Overrides the manifest / built-in
+    /// default. A submit animation always runs once and the window close waits
+    /// on it.
+    #[serde(default)]
+    pub trigger: Option<String>,
     /// Path to a sprite-sheet manifest (`.toml`). When set, loads a data-driven
     /// animation from that file instead of a built-in `name`.
     #[serde(default)]
@@ -99,6 +106,7 @@ impl Default for AnimSpec {
             enter_from: None,
             exit_to: None,
             cycle: None,
+            trigger: None,
             file: None,
         }
     }
@@ -111,6 +119,33 @@ fn parse_cycle(s: &str) -> Option<Lifecycle> {
         "loop" => Some(Lifecycle::Loop { hold: 2.5, gap: 1.0 }),
         "hold" => Some(Lifecycle::Hold),
         _ => None,
+    }
+}
+
+/// When an animation plays: on launcher open (`Spawn`) or on submit (`Submit`).
+/// An animation declares this in its manifest / built-in default; the config can
+/// override it. The host routes each animation to its slot by this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Spawn,
+    Submit,
+}
+
+fn parse_trigger(s: &str) -> Option<Trigger> {
+    match s.to_ascii_lowercase().as_str() {
+        "spawn" | "open" => Some(Trigger::Spawn),
+        "submit" | "enter" => Some(Trigger::Submit),
+        _ => None,
+    }
+}
+
+/// Coerce any lifecycle to a single run, preserving its hold. Submit animations
+/// are forced through this: the window close waits on the exit, so a `loop` or
+/// `hold` would hang it open forever.
+fn as_single_run(lc: Lifecycle) -> Lifecycle {
+    match lc {
+        Lifecycle::Once { hold } | Lifecycle::Loop { hold, .. } => Lifecycle::Once { hold },
+        Lifecycle::Hold => Lifecycle::Once { hold: 1.0 },
     }
 }
 
@@ -193,6 +228,9 @@ struct SpriteManifest {
     // Motion (all optional; config block overrides these).
     #[serde(default)]
     cycle: Option<String>,
+    /// "spawn" | "submit" — when this animation plays. Config `trigger` overrides.
+    #[serde(default)]
+    trigger: Option<String>,
     #[serde(default)]
     enter_from: Option<DirSpec>,
     #[serde(default)]
@@ -244,7 +282,7 @@ fn expand_tilde(p: &str) -> PathBuf {
 }
 
 /// Load a data-driven sprite animation from a manifest file.
-fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Box<dyn Animation>, String> {
+fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Built, String> {
     let path = expand_tilde(file);
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -304,12 +342,22 @@ fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Box<dyn Animation>, St
         .rest
         .map(|r| Anchor::new(r[0], r[1], r[2], r[3]))
         .unwrap_or(Anchor::new(0.5, 0.5, 0.0, 0.0));
-    let cyc = spec
-        .cycle
+    // Trigger: config beats manifest beats default (spawn). Submit forces once.
+    let trigger = spec
+        .trigger
         .as_deref()
-        .or(m.cycle.as_deref())
-        .and_then(parse_cycle)
-        .unwrap_or(Lifecycle::Loop { hold: 2.5, gap: 1.0 });
+        .or(m.trigger.as_deref())
+        .and_then(parse_trigger)
+        .unwrap_or(Trigger::Spawn);
+    let cyc = {
+        let lc = spec
+            .cycle
+            .as_deref()
+            .or(m.cycle.as_deref())
+            .and_then(parse_cycle)
+            .unwrap_or(Lifecycle::Loop { hold: 2.5, gap: 1.0 });
+        if trigger == Trigger::Submit { as_single_run(lc) } else { lc }
+    };
     let spring = Spring::new(m.stiffness.unwrap_or(200.0), m.damping.unwrap_or(16.0));
 
     let mut staged = Staged::new(
@@ -329,28 +377,74 @@ fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Box<dyn Animation>, St
     if let Some(mc) = m.min_card {
         staged = staged.with_min_card(mc);
     }
-    Ok(Box::new(staged))
+    Ok(Built { trigger, anim: Box::new(staged) })
 }
 
-/// The registry: resolve a [`AnimSpec`] into a ready-to-drive animation.
-/// Unknown names fall back to the little guy.
-pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
+/// A built animation together with the slot it routes to.
+pub struct Built {
+    pub trigger: Trigger,
+    pub anim: Box<dyn Animation>,
+}
+
+/// Resolve a list of specs into the (spawn, submit) slots, routing each by its
+/// trigger. Within a slot the last entry wins (a duplicate logs a warning).
+/// Empty slots get [`NoAnim`], so callers can treat "no animation" uniformly.
+pub fn build_all(specs: &[AnimSpec]) -> (Box<dyn Animation>, Box<dyn Animation>) {
+    let mut spawn: Option<Box<dyn Animation>> = None;
+    let mut submit: Option<Box<dyn Animation>> = None;
+    for spec in specs {
+        let built = build(spec);
+        let slot = match built.trigger {
+            Trigger::Spawn => &mut spawn,
+            Trigger::Submit => &mut submit,
+        };
+        if slot.is_some() {
+            eprintln!(
+                "animation: multiple {:?} animations configured; using the last",
+                built.trigger
+            );
+        }
+        *slot = Some(built.anim);
+    }
+    (
+        spawn.unwrap_or_else(|| Box::new(NoAnim)),
+        submit.unwrap_or_else(|| Box::new(NoAnim)),
+    )
+}
+
+/// The registry: resolve an [`AnimSpec`] into a ready-to-drive animation and the
+/// slot it plays in. Unknown names fall back to the little guy.
+pub fn build(spec: &AnimSpec) -> Built {
     // A `file = "..."` manifest takes precedence over a built-in `name`.
     if let Some(file) = &spec.file {
         return build_from_file(file, spec).unwrap_or_else(|e| {
             eprintln!("animation: failed to load {file}: {e}");
-            Box::new(NoAnim)
+            Built { trigger: Trigger::Spawn, anim: Box::new(NoAnim) }
         });
     }
 
+    // Trigger: config override, else the per-name default. Most built-ins are
+    // spawn animations; the F1 car is a submit ("launch off the line") by default.
+    let default_trigger = match spec.name.as_str() {
+        "f1" | "f1_car" => Trigger::Submit,
+        _ => Trigger::Spawn,
+    };
+    let trigger = spec
+        .trigger
+        .as_deref()
+        .and_then(parse_trigger)
+        .unwrap_or(default_trigger);
+
     let enter = |fallback: Dir| spec.enter_from.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
     let exit = |fallback: Dir| spec.exit_to.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
-    // Config `cycle` overrides the per-animation default lifecycle.
+    // Config `cycle` overrides the per-animation default lifecycle; a submit
+    // animation is always coerced to a single run so the window can close.
     let lifecycle = |default: Lifecycle| {
-        spec.cycle.as_deref().and_then(parse_cycle).unwrap_or(default)
+        let lc = spec.cycle.as_deref().and_then(parse_cycle).unwrap_or(default);
+        if trigger == Trigger::Submit { as_single_run(lc) } else { lc }
     };
 
-    match spec.name.as_str() {
+    let anim: Box<dyn Animation> = match spec.name.as_str() {
         "none" | "off" => Box::new(NoAnim),
         // A procedurally-generated sprite, proving sprites run through the exact
         // same pipeline as the vector guy. Drifts in from the right by default.
@@ -387,6 +481,22 @@ pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
                 .with_min_card(96),
             )
         }
+        // The Speed Racer driver: a tall figure revealed by a slow feet→face
+        // vertical pan, parked in the right quarter; holds until you submit, then
+        // drops away as the car launches. Defaults to the spawn slot.
+        "racer" | "speed_racer" => {
+            let approach = Approach {
+                rest: Anchor::new(0.75, 0.5, 0.0, 0.0), // right quarter, centred
+                enter_from: enter(Dir::Xy { dx: 0.0, dy: 24.0 }), // a gentle rise in
+                exit_to: exit(Dir::Deg(270.0)),                   // sink away on handoff
+            };
+            Box::new(
+                Staged::new(Racer::new(), approach, Spring::new(140.0, 22.0), 0.01)
+                    .with_lifecycle(lifecycle(Lifecycle::Hold))
+                    .with_fit(0.92)
+                    .with_min_card(120),
+            )
+        }
         // Default: the little guy peeking up over the bottom edge.
         _ => {
             let approach = Approach {
@@ -399,5 +509,6 @@ pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
                     .with_lifecycle(lifecycle(Lifecycle::Once { hold: 1.4 })),
             )
         }
-    }
+    };
+    Built { trigger, anim }
 }

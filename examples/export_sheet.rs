@@ -22,6 +22,7 @@ fn main() {
         "f1",
         SpriteContent::f1_car(),
         r#"cycle = "once"
+trigger = "submit"
 enter_from = "left"
 exit_to = "right"
 rest = [0.25, 0.62, 0.0, 0.0]

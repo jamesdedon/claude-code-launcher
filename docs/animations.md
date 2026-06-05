@@ -25,6 +25,7 @@ no animation runs.**
 | `name`       | string                        | `"little_guy"`| A built-in: `little_guy`, `spinner`, `f1`, `none`/`off`. |
 | `file`       | string (path)                 | —             | Path to a sprite manifest `.toml`. `~/` is expanded. Overrides `name`. |
 | `cycle`      | string                        | per-animation | `once` \| `loop` \| `hold`. Overrides the animation's lifecycle. |
+| `trigger`    | string                        | per-animation | `spawn` \| `submit` — which slot it plays in (see §1.1). |
 | `enter_from` | degrees \| edge \| `{dx,dy}`  | per-animation | Direction it enters from (see §5). |
 | `exit_to`    | degrees \| edge \| `{dx,dy}`  | per-animation | Direction it exits to. |
 
@@ -35,6 +36,32 @@ Anything set here **overrides** the manifest, which overrides built-in defaults.
 file = "~/.config/claude-code-launcher/anims/f1.toml"
 cycle = "once"          # override the manifest's lifecycle just here
 ```
+
+### 1.1 Triggers and slots — `spawn` vs `submit`
+
+There are two slots, and each animation **self-routes** into one by its
+`trigger`:
+
+- **`spawn`** (default) — plays when the launcher window opens.
+- **`submit`** — plays when you press Enter to launch. The window stays open
+  until this animation finishes its exit, *then* closes — so the car can drive
+  off before the launcher vanishes. Submit animations are always forced to a
+  **single run** (any `cycle` is coerced to `once`), otherwise the close would
+  hang forever. The F1 car defaults to `submit`.
+
+To run **both** a spawn and a submit animation, use an **array** of
+`[[animation]]` tables instead of a single `[animation]` table — each entry
+routes itself:
+
+```toml
+[[animation]]
+name = "little_guy"     # trigger defaults to "spawn"
+
+[[animation]]
+name = "f1"             # the F1 car defaults to "submit"
+```
+
+If two animations resolve to the same slot, the **last** one wins.
 
 ---
 
@@ -84,6 +111,7 @@ All optional; these mirror the built-in motion vocabulary.
 | Field        | Type                          | Default              | Meaning |
 |--------------|-------------------------------|----------------------|---------|
 | `cycle`      | string                        | `loop`               | Lifecycle: `once` \| `loop` \| `hold` (see §6). |
+| `trigger`    | string                        | `spawn`              | `spawn` \| `submit` — which slot it plays in (see §1.1). A manifest can declare this so the animation lands in the right slot on its own. |
 | `enter_from` | degrees \| edge \| `{dx,dy}`  | `left` (180°)        | Where it slides in from (see §5). |
 | `exit_to`    | degrees \| edge \| `{dx,dy}`  | `right` (0°)         | Where it slinks out to. |
 | `rest`       | `[nx, ny, dx, dy]`            | `[0.5, 0.5, 0, 0]`   | Resting position (see §4). |
@@ -160,8 +188,9 @@ Two different time loops — don't confuse them:
 A typical race car uses `play = "loop"` (wheels keep spinning) with
 `cycle = "once"` (it drives through exactly once).
 
-The launcher pops the animation in when the prompt opens and, for one-shots,
-stops redrawing once finished (looping ones keep going).
+A `spawn` animation pops in when the prompt opens; a `submit` animation plays on
+Enter (see §1.1) and is always forced to a single run. For one-shots the
+launcher stops redrawing once finished (looping ones keep going).
 
 ---
 
@@ -184,20 +213,22 @@ direction.
 
 ## 8. Precedence
 
-For every motion field: **config `[animation]` block → manifest → built-in
-default.** So you can ship a manifest with sensible defaults and still tweak
-`cycle`/`enter_from`/`exit_to` per-machine from the config block.
+For every field — including `trigger` — **config `[animation]` block → manifest
+→ built-in default.** So you can ship a manifest with sensible defaults
+(including which slot it plays in) and still tweak `cycle`/`trigger`/`enter_from`/
+`exit_to` per-machine from the config block.
 
 ---
 
 ## 9. Built-in animations
 
-| `name`       | Kind   | Default cycle | Enter → Exit  | Notes |
-|--------------|--------|---------------|---------------|-------|
-| `little_guy` | vector | `once`        | bottom ↑      | Peeks over the bottom edge; unscaled (overflows + masks). |
-| `spinner`    | sprite | `loop`        | right → right | Procedural demo sheet; `fit 0.8`, `min_card 96`. |
-| `f1`         | sprite | `once`        | left → right  | 8-bit car; under-damped spring (fights for grip); `fit 0.85`, `min_card 96`. |
-| `none`/`off` | —      | —             | —             | No animation. |
+| `name`       | Kind   | Default cycle | Default trigger | Enter → Exit  | Notes |
+|--------------|--------|---------------|-----------------|---------------|-------|
+| `little_guy` | vector | `once`        | `spawn`         | bottom ↑      | Peeks over the bottom edge; unscaled (overflows + masks). |
+| `racer`      | vector | `hold`        | `spawn`         | rise ↑ / sink ↓ | Speed-Racer-style driver; a slow feet→face vertical pan that holds on his face until you submit, then sinks away. Parked at the right quarter; `fit 0.92`, `min_card 120`. Pairs with `f1`. |
+| `spinner`    | sprite | `loop`        | `spawn`         | right → right | Procedural demo sheet; `fit 0.8`, `min_card 96`. |
+| `f1`         | sprite | `once`        | `submit`        | left → right  | 8-bit car; under-damped spring (fights for grip); `fit 0.85`, `min_card 96`. Launches off the line on Enter. |
+| `none`/`off` | —      | —             | —               | —             | No animation. |
 
 ---
 
@@ -232,6 +263,7 @@ play       = "loop"          # frames cycle forever while on screen
 pixelated  = true            # crisp 8-bit scaling
 
 cycle      = "once"          # one drive-through, then gone
+trigger    = "submit"        # plays on Enter; the window close waits for it
 enter_from = "left"          # = 180 degrees
 exit_to    = "right"         # = 0 degrees
 rest       = [0.25, 0.62, 0.0, 0.0]   # settle in the left quarter

@@ -137,15 +137,29 @@ struct Config {
     resume_args: Vec<String>,
     #[serde(default)]
     theme: Theme,
-    #[serde(default = "default_animation")]
-    animation: AnimSpec,
+    /// One `[animation]` table or an array of `[[animation]]` tables. Each entry
+    /// self-routes to a slot (open vs. submit) by its `trigger`. Absent → none.
+    #[serde(default, rename = "animation")]
+    animation: Option<AnimConfig>,
 }
 
-/// With no `[animation]` block (all catalog entries commented out), nothing runs.
-fn default_animation() -> AnimSpec {
-    AnimSpec {
-        name: "none".to_string(),
-        ..Default::default()
+/// The `[animation]` config: either a single table (one animation) or an array
+/// of `[[animation]]` tables (several). Each entry declares — or inherits from
+/// its manifest / built-in default — a `trigger` that routes it to a slot, so
+/// you can have both a spawn and a submit animation at once.
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum AnimConfig {
+    One(AnimSpec),
+    Many(Vec<AnimSpec>),
+}
+
+impl AnimConfig {
+    fn specs(&self) -> Vec<AnimSpec> {
+        match self {
+            AnimConfig::One(s) => vec![s.clone()],
+            AnimConfig::Many(v) => v.clone(),
+        }
     }
 }
 
@@ -229,38 +243,41 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 # pill_font_size = "11pt"
 # completion_font_size = "11pt"
 
-# Optional: an animation hosted in the prompt card. Uncomment exactly ONE
-# [animation] block below to turn it on; with all of them commented out, no
-# animation runs.
+# Optional: animation(s) hosted in the prompt card. Each animation declares a
+# `trigger` that routes it to a slot:
+#   trigger = "spawn"   (default) — plays when the launcher opens
+#   trigger = "submit"            — plays on Enter; the window close waits for it
+# A submit animation always runs once (any `cycle` is coerced to "once") so the
+# close can't hang. With no [animation] at all, nothing runs.
 #
-# cycle      = "once" | "loop" | "hold"
-# enter_from / exit_to = degrees (e.g. 270), a named edge ("bottom", "left",
-#              "right", "top", "bottom-right", ...), or scalars { dx = 0, dy = 200 }.
-#
-# The little guy, peeking up over the bottom edge (pops up once, slinks away):
+# Use ONE [animation] table for a single animation:
 # [animation]
 # name = "little_guy"
 # cycle = "once"
 #
-# A looping sprite drifting in from the right:
-# [animation]
-# name = "spinner"
-# cycle = "loop"
+# ...or an array of [[animation]] tables to have BOTH (each self-routes). The
+# headline pairing — the Speed Racer driver pans into view on open, then hands
+# off to the car launching off the line when you submit:
+# [[animation]]
+# name = "racer"               # trigger defaults to "spawn"
 #
-# An 8-bit F1 car: pops in from the left fighting for grip, then takes off right:
-# [animation]
-# name = "f1"
-# cycle = "once"
+# [[animation]]
+# name = "f1"                  # the F1 car defaults to trigger = "submit"
 #
-# A data-driven sprite from a file (PNG sheet + manifest); see the manifest
-# for its own defaults, overridable here:
+# Per-animation fields (all optional, override the manifest / built-in default):
+# cycle      = "once" | "loop" | "hold"
+# trigger    = "spawn" | "submit"
+# enter_from / exit_to = degrees (e.g. 270), a named edge ("bottom", "left",
+#              "right", "top", "bottom-right", ...), or scalars { dx = 0, dy = 200 }.
+#
+# Built-ins: "little_guy" (peeks over the bottom edge), "racer" (Speed Racer
+# driver; slow feet-to-face pan, holds till submit), "spinner" (looping demo
+# sprite), "f1" (8-bit car, defaults to submit), "none"/"off" (nothing).
+#
+# A data-driven sprite from a file (PNG sheet + manifest); the manifest can
+# itself declare `trigger`, so this lands in the right slot on its own:
 # [animation]
 # file = "~/.config/claude-code-launcher/anims/f1.toml"
-# cycle = "once"
-#
-# Explicitly no animation:
-# [animation]
-# name = "none"
 "##;
 
 fn write_default_config(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -578,9 +595,13 @@ fn install_css(theme: &Theme) {
     }
 }
 
-/// Drives the hosted animation off the frame clock.
+/// Drives the hosted animations off the frame clock. `open` plays when the
+/// window appears; `submit` plays when a launch fires (and the window close
+/// waits on it). They never actually overlap — `open` is a finished one-shot by
+/// the time anyone submits — but both are ticked and drawn uniformly.
 struct AnimHost {
-    anim: Box<dyn Animation>,
+    open: Box<dyn Animation>,
+    submit: Box<dyn Animation>,
     last_us: Option<i64>,
 }
 
@@ -596,11 +617,31 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
 
     // Build the hosted animation up front so the prompt can be sized to give it
     // room (animations that need it request a minimum card height).
+    let anim_specs = config.animation.as_ref().map(AnimConfig::specs).unwrap_or_default();
+    let (open, submit) = anim::build_all(&anim_specs);
     let anim_host = Rc::new(RefCell::new(AnimHost {
-        anim: anim::build(&config.animation),
+        open,
+        submit,
         last_us: None,
     }));
-    let card_min = MIN_HEIGHT.max(anim_host.borrow().anim.min_card_height());
+    // Shared with the tick loop. `awaiting_close`: a launch fired and the window
+    // should close once the submit animation's exit finishes. `ticking`: a tick
+    // callback is currently armed, so the submit path knows whether to re-arm
+    // one (the loop detaches itself when idle to avoid redrawing forever).
+    let awaiting_close = Rc::new(Cell::new(false));
+    let ticking = Rc::new(Cell::new(false));
+    // The terminal launch is deferred until the submit animation finishes, so the
+    // spawned terminal doesn't pop up and mask the animation. The tick loop runs
+    // this (returning whether it succeeded) right before closing the window.
+    #[allow(clippy::type_complexity)]
+    let pending_launch: Rc<RefCell<Option<Box<dyn FnOnce() -> bool>>>> =
+        Rc::new(RefCell::new(None));
+    let card_min = {
+        let h = anim_host.borrow();
+        MIN_HEIGHT
+            .max(h.open.min_card_height())
+            .max(h.submit.min_card_height())
+    };
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
@@ -681,31 +722,13 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
             w: w as f64,
             h: h as f64,
         };
-        host_draw.borrow().anim.draw(cr, &stage);
+        let host = host_draw.borrow();
+        host.open.draw(cr, &stage);
+        host.submit.draw(cr, &stage);
     });
-
-    let host_tick = anim_host.clone();
-    anim_area.add_tick_callback(move |area, clock| {
-        let now = clock.frame_time();
-        let mut h = host_tick.borrow_mut();
-        let dt = match h.last_us {
-            Some(prev) => ((now - prev) as f64 / 1_000_000.0).min(1.0 / 30.0),
-            None => 0.0,
-        };
-        h.last_us = Some(now);
-        if dt > 0.0 {
-            h.anim.tick(dt);
-        }
-        let finished = h.anim.is_finished();
-        area.queue_draw();
-        // Stop ticking once a one-shot is done, so the window isn't redrawn
-        // forever; looping animations report not-finished and keep going.
-        if finished {
-            glib::ControlFlow::Break
-        } else {
-            glib::ControlFlow::Continue
-        }
-    });
+    // The tick callback that advances both animations is armed after the window
+    // exists (see `arm_ticks` near `window.present()`), since it closes the
+    // window once the submit animation finishes.
 
     // Animation floats over the prompt content, both inside the masked card.
     let card_overlay = Overlay::new();
@@ -761,6 +784,11 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     // window from its toplevels store twice (the g_list_store_remove critical).
     let closing = Rc::new(Cell::new(false));
     let closing_for_key = closing.clone();
+    let host_for_key = anim_host.clone();
+    let anim_area_for_key = anim_area.clone();
+    let awaiting_for_key = awaiting_close.clone();
+    let ticking_for_key = ticking.clone();
+    let pending_for_key = pending_launch.clone();
 
     let key_controller = EventControllerKey::new();
     key_controller.set_propagation_phase(PropagationPhase::Capture);
@@ -799,19 +827,50 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
             if prompt.is_empty() && !has_ctrl {
                 return glib::Propagation::Stop;
             }
-            let prompt_opt = (!prompt.is_empty()).then_some(prompt);
             let working_dir = state_for_key.borrow().current_project_path();
-            let extra: &[String] = if has_ctrl { &resume_args } else { &[] };
-            match launch_terminal(prompt_opt, &working_dir, &terminal_command, extra) {
-                Ok(_) => {
-                    if let Some(p) = prompt_opt {
-                        state_for_key.borrow_mut().record(p);
+            if let Some(p) = (!prompt.is_empty()).then_some(prompt) {
+                state_for_key.borrow_mut().record(p);
+            }
+            // Build the launch but DON'T run it yet. The tick loop fires it the
+            // moment the submit animation finishes its exit, then closes — so the
+            // spawned terminal can't pop up and mask the animation. With no submit
+            // animation the exit is instantly done, so it fires next frame (as
+            // before). Returns whether the launch succeeded.
+            let pending: Box<dyn FnOnce() -> bool> = {
+                let prompt_owned = prompt.to_string();
+                let wd = working_dir.clone();
+                let tc = terminal_command.clone();
+                let ex: Vec<String> = if has_ctrl { resume_args.clone() } else { Vec::new() };
+                let win = window_for_key.clone();
+                Box::new(move || {
+                    let popt = (!prompt_owned.is_empty()).then_some(prompt_owned.as_str());
+                    match launch_terminal(popt, &wd, &tc, &ex) {
+                        Ok(_) => true,
+                        Err(e) => {
+                            show_error(&win, "Failed to launch", &e.to_string());
+                            false
+                        }
                     }
-                    if !closing_for_key.replace(true) {
-                        window_for_key.close();
-                    }
-                }
-                Err(e) => show_error(&window_for_key, "Failed to launch", &e.to_string()),
+                })
+            };
+            *pending_for_key.borrow_mut() = Some(pending);
+            // Hand off: dismiss the spawn animation as the car takes over.
+            {
+                let mut h = host_for_key.borrow_mut();
+                h.open.hide();
+                h.submit.show();
+            }
+            awaiting_for_key.set(true);
+            if !ticking_for_key.get() {
+                arm_ticks(
+                    &anim_area_for_key,
+                    host_for_key.clone(),
+                    window_for_key.clone(),
+                    awaiting_for_key.clone(),
+                    ticking_for_key.clone(),
+                    closing_for_key.clone(),
+                    pending_for_key.clone(),
+                );
             }
             return glib::Propagation::Stop;
         }
@@ -865,10 +924,14 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let buffer_for_active = text_view.buffer();
     let was_active = Rc::new(Cell::new(false));
     let closing_for_active = closing.clone();
+    let awaiting_for_active = awaiting_close.clone();
     window.connect_is_active_notify(move |w| {
         if w.is_active() {
             was_active.set(true);
-        } else if was_active.get() && !closing_for_active.get() {
+        // While a submit animation is playing, the launched terminal grabs focus
+        // and deactivates us — don't let that auto-close cut the animation short;
+        // the tick loop owns the close.
+        } else if was_active.get() && !closing_for_active.get() && !awaiting_for_active.get() {
             if suppress_close.get() {
                 suppress_close.set(false);
                 return;
@@ -882,7 +945,77 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
 
     window.present();
     text_view.grab_focus();
-    anim_host.borrow_mut().anim.show(); // pop the animation in on open
+    anim_host.borrow_mut().open.show(); // pop the open animation in
+    arm_ticks(
+        &anim_area,
+        anim_host.clone(),
+        window.clone(),
+        awaiting_close.clone(),
+        ticking.clone(),
+        closing.clone(),
+        pending_launch.clone(),
+    );
+}
+
+/// Arm a frame-clock tick callback that advances both hosted animations, and —
+/// once a submitted launch's animation has finished its exit — closes the
+/// window. The callback detaches itself (`Break`) when nothing is left to
+/// animate, so an idle launcher isn't redrawn forever; the submit path re-arms
+/// it (guarded by `ticking`) when a launch fires after the idle break.
+#[allow(clippy::type_complexity)]
+fn arm_ticks(
+    anim_area: &DrawingArea,
+    host: Rc<RefCell<AnimHost>>,
+    window: ApplicationWindow,
+    awaiting_close: Rc<Cell<bool>>,
+    ticking: Rc<Cell<bool>>,
+    closing: Rc<Cell<bool>>,
+    pending_launch: Rc<RefCell<Option<Box<dyn FnOnce() -> bool>>>>,
+) {
+    ticking.set(true);
+    host.borrow_mut().last_us = None; // fresh dt baseline on (re-)arm
+    anim_area.add_tick_callback(move |area, clock| {
+        let now = clock.frame_time();
+        let mut h = host.borrow_mut();
+        let dt = match h.last_us {
+            Some(prev) => ((now - prev) as f64 / 1_000_000.0).min(1.0 / 30.0),
+            None => 0.0,
+        };
+        h.last_us = Some(now);
+        if dt > 0.0 {
+            h.open.tick(dt);
+            h.submit.tick(dt);
+        }
+        area.queue_draw();
+
+        // A submitted launch waits on its animation: once the car (etc.) has
+        // fully driven off, fire the deferred terminal launch, then close. Doing
+        // the launch here (not at submit time) keeps the terminal from popping up
+        // and masking the animation. Uses the shared close guard so it can't race
+        // the Escape / focus-out close paths.
+        if awaiting_close.get() && h.submit.is_exit_done() {
+            awaiting_close.set(false);
+            ticking.set(false);
+            drop(h);
+            let launched = pending_launch.borrow_mut().take().map(|f| f()).unwrap_or(true);
+            // If the launch failed, the error dialog is shown; close anyway so we
+            // don't strand a half-dismissed launcher.
+            let _ = launched;
+            if !closing.replace(true) {
+                window.close();
+            }
+            return glib::ControlFlow::Break;
+        }
+
+        // Stop ticking once both one-shots are done, so the window isn't redrawn
+        // forever; looping animations report not-finished and keep going.
+        if h.open.is_finished() && h.submit.is_finished() {
+            ticking.set(false);
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
 }
 
 fn render_completions(container: &GtkBox, state: &State) {

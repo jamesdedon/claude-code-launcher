@@ -51,7 +51,7 @@ fn build(app: &Application) {
         ..Default::default()
     };
     let harness = Rc::new(RefCell::new(Harness {
-        anim: anim::build(&spec),
+        anim: anim::build(&spec).anim,
         last_us: None,
     }));
 
