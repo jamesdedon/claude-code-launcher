@@ -136,8 +136,8 @@ impl SpriteContent {
     pub fn f1_car() -> Self {
         let frames = 8usize;
         let p = 4.0; // device px per art pixel
-        let (art_w, art_h) = (35.0, 18.0);
-        let fw = (art_w * p) as i32; // 140
+        let (art_w, art_h) = (38.0, 18.0);
+        let fw = (art_w * p) as i32; // 152
         let fh = (art_h * p) as i32; // 72
         let cols = frames;
         let surface =
@@ -165,7 +165,8 @@ impl SpriteContent {
 }
 
 /// Paint one 8-bit F1 frame into the sheet at horizontal offset `ox`. `p` is
-/// device pixels per art pixel; `frame` drives wheels, exhaust, and the shake.
+/// device pixels per art pixel; `frame` drives the wheels, the dirt spray, and
+/// the revving shake. Original blue-livery art (inspired-by, not copied).
 fn draw_f1_frame(cr: &cairo::Context, ox: f64, p: f64, frame: usize) {
     // Fill an art-space rect (chunky pixel) with the current source colour.
     let px = |x: f64, y: f64, w: f64, h: f64| {
@@ -179,65 +180,99 @@ fn draw_f1_frame(cr: &cairo::Context, ox: f64, p: f64, frame: usize) {
         _ => 0.0,
     };
 
+    // Palette.
+    let blue = (0.13, 0.33, 0.78);
+    let blue_dk = (0.08, 0.20, 0.52);
+    let red = (0.85, 0.15, 0.15);
+    let white = (0.95, 0.95, 0.97);
+    let tyre = (0.10, 0.10, 0.12);
+    let brake = (0.80, 0.12, 0.12);
+    let hub = (0.65, 0.65, 0.68);
+    let wing = (0.13, 0.13, 0.16);
+    let set = |c: (f64, f64, f64)| cr.set_source_rgba(c.0, c.1, c.2, 1.0);
+
     // Ground contact shadow.
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.18);
-    px(7.0, 14.6, 21.0, 1.2);
+    px(7.0, 14.6, 24.0, 1.2);
 
-    // Wheels (steady; the body shakes around them).
-    for &cx in &[10.0, 26.0] {
-        cr.set_source_rgba(0.10, 0.10, 0.12, 1.0); // tyre
+    // Dirt kicking up behind the rear wheel — specks streaming back-left + up.
+    for k in 0..5usize {
+        let phase = ((frame + k * 2) % 8) as f64;
+        let dx = 8.0 - phase * 0.8 - k as f64 * 0.3;
+        let dy = 13.5 - phase * 0.6 - (k as f64 * 0.2);
+        let sz = (1.5 - phase * 0.13).max(0.4);
+        if k % 2 == 0 {
+            set((0.42, 0.30, 0.17));
+        } else {
+            set((0.58, 0.45, 0.28));
+        }
+        px(dx, dy, sz, sz);
+    }
+
+    // Wheels (steady; the body shakes around them) — tyre, red disc, hub.
+    for &cx in &[11.0, 28.0] {
+        set(tyre);
         px(cx - 2.5, 8.0, 5.0, 7.0);
         px(cx - 3.5, 9.0, 7.0, 5.0);
-        cr.set_source_rgba(0.60, 0.60, 0.62, 1.0); // hub
-        px(cx - 1.0, 10.5, 2.0, 2.0);
-        cr.set_source_rgba(0.85, 0.85, 0.85, 1.0); // spinning spoke highlight
+        set(brake);
+        px(cx - 1.5, 10.0, 3.0, 3.0);
+        set(hub);
+        px(cx - 0.5, 11.0, 1.0, 1.0);
+        // Spinning highlight on the tyre.
+        set((0.40, 0.40, 0.44));
         match frame % 4 {
-            0 => px(cx - 0.5, 8.5, 1.0, 2.0),
-            1 => px(cx + 1.0, 10.5, 2.0, 1.0),
-            2 => px(cx - 0.5, 12.5, 1.0, 2.0),
-            _ => px(cx - 3.0, 10.5, 2.0, 1.0),
+            0 => px(cx - 0.5, 8.3, 1.0, 1.4),
+            1 => px(cx + 1.6, 11.0, 1.4, 1.0),
+            2 => px(cx - 0.5, 13.3, 1.0, 1.4),
+            _ => px(cx - 3.0, 11.0, 1.4, 1.0),
         }
     }
 
-    // Exhaust flame trailing off the back (left), flickering.
-    let (fc, fx, fw2) = match frame % 3 {
-        0 => ((1.0, 0.85, 0.2), 1.0, 1.6),
-        1 => ((1.0, 0.55, 0.1), 0.3, 2.4),
-        _ => ((1.0, 0.72, 0.15), 0.0, 3.2),
-    };
-    cr.set_source_rgba(fc.0, fc.1, fc.2, 1.0);
-    px(fx, 7.6 + vy, fw2, 1.6);
-
     // Rear wing.
-    cr.set_source_rgba(0.15, 0.15, 0.17, 1.0);
+    set(wing);
     px(2.0, 3.5 + vy, 4.0, 1.2); // top plane
     px(2.5, 3.5 + vy, 1.5, 5.0); // endplate
+    set(red);
+    px(2.0, 3.5 + vy, 4.0, 0.4); // red tip
 
-    // Body: rear structure, main tub, floor, nose.
-    cr.set_source_rgba(0.55, 0.08, 0.10, 1.0);
-    px(4.0, 7.0 + vy, 4.0, 4.0);
-    cr.set_source_rgba(0.82, 0.12, 0.15, 1.0);
-    px(6.0, 8.0 + vy, 22.0, 3.0);
-    cr.set_source_rgba(0.55, 0.08, 0.10, 1.0);
-    px(8.0, 10.5 + vy, 17.0, 1.5);
-    cr.set_source_rgba(0.82, 0.12, 0.15, 1.0);
-    px(28.0, 8.5 + vy, 4.0, 2.0); // nose
-    px(31.5, 9.0 + vy, 2.5, 1.0); // nose tip
+    // Body: rear structure, main tub, side stripe, floor, nose.
+    set(blue_dk);
+    px(5.0, 7.0 + vy, 4.0, 4.0);
+    set(blue);
+    px(7.0, 8.0 + vy, 22.0, 3.0);
+    set(red);
+    px(9.0, 9.0 + vy, 18.0, 1.0); // side stripe
+    set(white);
+    px(7.0, 8.0 + vy, 3.0, 1.0); // front-of-tub flash
+    set(blue_dk);
+    px(9.0, 10.5 + vy, 18.0, 1.2); // floor
+    set(blue);
+    px(29.0, 8.5 + vy, 5.0, 2.0); // nose
+    px(33.5, 9.0 + vy, 2.5, 1.0); // nose tip
+    set(red);
+    px(35.5, 9.2 + vy, 1.0, 0.8); // nose tip accent
 
-    // Cockpit hump, halo, helmet.
-    cr.set_source_rgba(0.82, 0.12, 0.15, 1.0);
-    px(14.0, 6.5 + vy, 6.0, 2.0);
-    cr.set_source_rgba(0.15, 0.15, 0.17, 1.0);
-    px(14.5, 5.0 + vy, 1.0, 2.5); // roll hoop / halo
-    cr.set_source_rgba(0.15, 0.35, 0.85, 1.0); // helmet
-    px(15.5, 5.5 + vy, 3.0, 2.0);
-    cr.set_source_rgba(0.95, 0.95, 0.95, 1.0); // helmet stripe
-    px(15.5, 5.5 + vy, 3.0, 0.7);
+    // Cockpit + driver + helmet.
+    set(blue);
+    px(15.0, 6.5 + vy, 6.0, 2.0); // cockpit base
+    px(17.0, 6.0 + vy, 3.0, 1.5); // torso
+    set(wing);
+    px(15.5, 5.0 + vy, 1.0, 2.5); // halo / roll hoop
+    set((0.10, 0.25, 0.70));
+    px(18.5, 5.0 + vy, 3.0, 2.2); // helmet
+    set(red);
+    px(18.5, 5.0 + vy, 3.0, 0.6); // helmet top
+    set(white);
+    px(18.5, 5.7 + vy, 3.0, 0.5); // helmet stripe
+    set((0.05, 0.05, 0.08));
+    px(20.0, 5.8 + vy, 1.3, 0.9); // visor
 
     // Front wing.
-    cr.set_source_rgba(0.15, 0.15, 0.17, 1.0);
-    px(29.0, 11.0 + vy, 5.0, 1.0);
-    px(33.0, 10.0 + vy, 1.2, 2.0); // endplate
+    set(wing);
+    px(30.0, 11.0 + vy, 5.0, 1.0);
+    px(34.0, 10.0 + vy, 1.2, 2.0); // endplate
+    set(red);
+    px(30.0, 11.0 + vy, 5.0, 0.4);
 }
 
 impl Content for SpriteContent {
