@@ -21,7 +21,7 @@ pub mod stage;
 
 pub use content::{Content, Play, SpriteContent};
 pub use little_guy::VectorGuy;
-pub use motion::{Approach, Spring, Staged};
+pub use motion::{Approach, Lifecycle, Spring, Staged};
 pub use stage::{Anchor, Dir, Stage};
 
 use serde::Deserialize;
@@ -49,6 +49,19 @@ pub trait Animation {
     fn draw(&self, cr: &gtk4::cairo::Context, stage: &Stage);
     /// True once the exit has fully played out — for deferring window close.
     fn is_exit_done(&self) -> bool;
+
+    /// True once the animation is done and will NOT restart on its own, so a
+    /// host can stop ticking. Defaults to [`Animation::is_exit_done`]; looping
+    /// animations override this to stay live.
+    fn is_finished(&self) -> bool {
+        self.is_exit_done()
+    }
+
+    /// The minimum card height (px) this animation wants to fit; the host can
+    /// raise the prompt to at least this. Defaults to 0 (no requirement).
+    fn min_card_height(&self) -> i32 {
+        0
+    }
 }
 
 /// Config-facing selection. `name` maps to a registered animation; the optional
@@ -69,6 +82,9 @@ pub struct AnimSpec {
     pub enter_from: Option<DirSpec>,
     #[serde(default)]
     pub exit_to: Option<DirSpec>,
+    /// "once" | "loop" | "hold". Overrides the animation's default lifecycle.
+    #[serde(default)]
+    pub cycle: Option<String>,
 }
 
 impl Default for AnimSpec {
@@ -77,7 +93,18 @@ impl Default for AnimSpec {
             name: default_name(),
             enter_from: None,
             exit_to: None,
+            cycle: None,
         }
+    }
+}
+
+/// Parse a config `cycle` string into a [`Lifecycle`] with default timings.
+fn parse_cycle(s: &str) -> Option<Lifecycle> {
+    match s.to_ascii_lowercase().as_str() {
+        "once" => Some(Lifecycle::Once { hold: 1.3 }),
+        "loop" => Some(Lifecycle::Loop { hold: 2.5, gap: 1.0 }),
+        "hold" => Some(Lifecycle::Hold),
+        _ => None,
     }
 }
 
@@ -120,13 +147,34 @@ fn named_degrees(s: &str) -> f64 {
     }
 }
 
+/// A no-op animation: draws nothing and is always "done", so hosting code can
+/// treat "no animation" uniformly (close paths never wait on it).
+pub struct NoAnim;
+
+impl Animation for NoAnim {
+    fn show(&mut self) {}
+    fn hide(&mut self) {}
+    fn tick(&mut self, _dt: f64) -> Phase {
+        Phase::Done
+    }
+    fn draw(&self, _cr: &gtk4::cairo::Context, _stage: &Stage) {}
+    fn is_exit_done(&self) -> bool {
+        true
+    }
+}
+
 /// The registry: resolve a [`AnimSpec`] into a ready-to-drive animation.
 /// Unknown names fall back to the little guy.
 pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
     let enter = |fallback: Dir| spec.enter_from.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
     let exit = |fallback: Dir| spec.exit_to.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
+    // Config `cycle` overrides the per-animation default lifecycle.
+    let lifecycle = |default: Lifecycle| {
+        spec.cycle.as_deref().and_then(parse_cycle).unwrap_or(default)
+    };
 
     match spec.name.as_str() {
+        "none" | "off" => Box::new(NoAnim),
         // A procedurally-generated sprite, proving sprites run through the exact
         // same pipeline as the vector guy. Drifts in from the right by default.
         "spinner" => {
@@ -135,12 +183,12 @@ pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
                 enter_from: enter(Dir::Deg(0.0)),
                 exit_to: exit(Dir::Deg(0.0)),
             };
-            Box::new(Staged::new(
-                SpriteContent::spinner(),
-                approach,
-                Spring::new(180.0, 16.0),
-                0.02,
-            ))
+            Box::new(
+                Staged::new(SpriteContent::spinner(), approach, Spring::new(180.0, 16.0), 0.02)
+                    .with_lifecycle(lifecycle(Lifecycle::Loop { hold: 2.5, gap: 1.0 }))
+                    .with_fit(0.8)
+                    .with_min_card(96),
+            )
         }
         // An 8-bit F1 car: pops in from the left fighting for grip (under-damped
         // spring), then takes off to the right.
@@ -150,12 +198,17 @@ pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
                 enter_from: enter(Dir::Deg(180.0)),      // from the left
                 exit_to: exit(Dir::Deg(0.0)),            // off to the right
             };
-            Box::new(Staged::new(
-                SpriteContent::f1_car(),
-                approach,
-                Spring::new(240.0, 11.0), // under-damped: it fights for speed
-                0.02,
-            ))
+            Box::new(
+                Staged::new(
+                    SpriteContent::f1_car(),
+                    approach,
+                    Spring::new(240.0, 11.0), // under-damped: it fights for speed
+                    0.02,
+                )
+                .with_lifecycle(lifecycle(Lifecycle::Once { hold: 1.0 })) // a single run
+                .with_fit(0.85)
+                .with_min_card(96),
+            )
         }
         // Default: the little guy peeking up over the bottom edge.
         _ => {
@@ -164,12 +217,10 @@ pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
                 enter_from: enter(Dir::Deg(270.0)),
                 exit_to: exit(Dir::Deg(270.0)),
             };
-            Box::new(Staged::new(
-                VectorGuy::new(),
-                approach,
-                Spring::new(220.0, 18.0),
-                0.028,
-            ))
+            Box::new(
+                Staged::new(VectorGuy::new(), approach, Spring::new(220.0, 18.0), 0.028)
+                    .with_lifecycle(lifecycle(Lifecycle::Once { hold: 1.4 })),
+            )
         }
     }
 }

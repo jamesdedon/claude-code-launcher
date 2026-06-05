@@ -23,15 +23,9 @@ use std::rc::Rc;
 const APP_ID: &str = "dev.dedon.ClaudeCodeLauncher.LittleGuy";
 const CARD_H: i32 = 96;
 
-// Demo show/hide loop: visible for SHOW_FOR of every CYCLE seconds.
-const CYCLE: f64 = 5.0;
-const SHOW_FOR: f64 = 3.0;
-
 struct Harness {
     anim: Box<dyn Animation>,
-    start_us: Option<i64>,
     last_us: Option<i64>,
-    shown: bool,
 }
 
 fn main() -> glib::ExitCode {
@@ -48,16 +42,17 @@ fn main() -> glib::ExitCode {
 fn build(app: &Application) {
     install_css();
 
+    // ANIM picks the animation; CYCLE optionally overrides its lifecycle
+    // ("once" | "loop" | "hold") so you can re-watch a one-shot on a loop.
     let name = std::env::var("ANIM").unwrap_or_else(|_| "little_guy".to_string());
     let spec = AnimSpec {
         name,
+        cycle: std::env::var("CYCLE").ok(),
         ..Default::default()
     };
     let harness = Rc::new(RefCell::new(Harness {
         anim: anim::build(&spec),
-        start_us: None,
         last_us: None,
-        shown: false,
     }));
 
     let area = DrawingArea::builder()
@@ -82,29 +77,24 @@ fn build(app: &Application) {
         let now = clock.frame_time();
         let mut h = tick_h.borrow_mut();
 
-        let start = *h.start_us.get_or_insert(now);
-        let elapsed = (now - start) as f64 / 1_000_000.0;
         let dt = match h.last_us {
             Some(prev) => ((now - prev) as f64 / 1_000_000.0).min(1.0 / 30.0),
             None => 0.0,
         };
         h.last_us = Some(now);
 
-        // Drive the lifecycle on the demo loop.
-        let want_shown = (elapsed % CYCLE) < SHOW_FOR;
-        if want_shown && !h.shown {
-            h.shown = true;
-            h.anim.show();
-        } else if !want_shown && h.shown {
-            h.shown = false;
-            h.anim.hide();
-        }
+        // The animation drives its own lifecycle (Once / Loop / Hold).
         if dt > 0.0 {
             h.anim.tick(dt);
         }
+        let finished = h.anim.is_finished();
 
         area.queue_draw();
-        glib::ControlFlow::Continue
+        if finished {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
     });
 
     // Prompt-card chrome.
@@ -161,6 +151,7 @@ fn build(app: &Application) {
     window.add_controller(key);
 
     window.present();
+    harness.borrow_mut().anim.show(); // kick the lifecycle off
 }
 
 fn install_css() {

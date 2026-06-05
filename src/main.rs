@@ -1,8 +1,10 @@
+use claude_code_launcher::anim::{self, AnimSpec, Animation, Stage};
 use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, AlertDialog, Align, Application, ApplicationWindow, Box as GtkBox,
-    CssProvider, EventControllerKey, EventControllerLegacy, Label, Orientation, Overlay,
-    PolicyType, PropagationPhase, ScrolledWindow, TextView, Window, WindowHandle, WrapMode,
+    CssProvider, DrawingArea, EventControllerKey, EventControllerLegacy, Label, Orientation,
+    Overflow, Overlay, PolicyType, PropagationPhase, ScrolledWindow, TextView, Window,
+    WindowHandle, WrapMode,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
@@ -73,7 +75,8 @@ box.popup {{
     background: {popup_background};
     border-radius: 14px;
     border: 1px solid {popup_border};
-    padding: 10px;
+    /* No bottom padding so a hosted animation reaches the rounded bottom edge. */
+    padding: 10px 10px 0 10px;
 }}
 
 scrolledwindow {{
@@ -134,6 +137,16 @@ struct Config {
     resume_args: Vec<String>,
     #[serde(default)]
     theme: Theme,
+    #[serde(default = "default_animation")]
+    animation: AnimSpec,
+}
+
+/// With no `[animation]` block (all catalog entries commented out), nothing runs.
+fn default_animation() -> AnimSpec {
+    AnimSpec {
+        name: "none".to_string(),
+        ..Default::default()
+    }
 }
 
 fn default_resume_args() -> Vec<String> {
@@ -215,6 +228,33 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 # font_size = "14pt"
 # pill_font_size = "11pt"
 # completion_font_size = "11pt"
+
+# Optional: an animation hosted in the prompt card. Uncomment exactly ONE
+# [animation] block below to turn it on; with all of them commented out, no
+# animation runs.
+#
+# cycle      = "once" | "loop" | "hold"
+# enter_from / exit_to = degrees (e.g. 270), a named edge ("bottom", "left",
+#              "right", "top", "bottom-right", ...), or scalars { dx = 0, dy = 200 }.
+#
+# The little guy, peeking up over the bottom edge (pops up once, slinks away):
+# [animation]
+# name = "little_guy"
+# cycle = "once"
+#
+# A looping sprite drifting in from the right:
+# [animation]
+# name = "spinner"
+# cycle = "loop"
+#
+# An 8-bit F1 car: pops in from the left fighting for grip, then takes off right:
+# [animation]
+# name = "f1"
+# cycle = "once"
+#
+# Explicitly no animation:
+# [animation]
+# name = "none"
 "##;
 
 fn write_default_config(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -532,6 +572,12 @@ fn install_css(theme: &Theme) {
     }
 }
 
+/// Drives the hosted animation off the frame clock.
+struct AnimHost {
+    anim: Box<dyn Animation>,
+    last_us: Option<i64>,
+}
+
 fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let text_view = TextView::builder()
         .accepts_tab(false)
@@ -542,13 +588,21 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         .bottom_margin(2)
         .build();
 
+    // Build the hosted animation up front so the prompt can be sized to give it
+    // room (animations that need it request a minimum card height).
+    let anim_host = Rc::new(RefCell::new(AnimHost {
+        anim: anim::build(&config.animation),
+        last_us: None,
+    }));
+    let card_min = MIN_HEIGHT.max(anim_host.borrow().anim.min_card_height());
+
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .propagate_natural_height(true)
         .propagate_natural_width(true)
         .max_content_height(MAX_HEIGHT)
-        .min_content_height(MIN_HEIGHT)
+        .min_content_height(card_min)
         .max_content_width(540)
         .min_content_width(540)
         .child(&text_view)
@@ -599,15 +653,69 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     });
     placeholder.set_visible(buffer.char_count() == 0);
 
+    // Host the configured animation inside the prompt card (built above). The
+    // card uses overflow:hidden so the animation is masked to its rounded border.
+    let content = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .build();
+    content.append(&overlay);
+    content.append(&completions_box);
+
+    let anim_area = DrawingArea::builder()
+        .halign(Align::Fill)
+        .valign(Align::Fill)
+        .hexpand(true)
+        .vexpand(true)
+        .can_target(false)
+        .build();
+
+    let host_draw = anim_host.clone();
+    anim_area.set_draw_func(move |_, cr, w, h| {
+        let stage = Stage {
+            w: w as f64,
+            h: h as f64,
+        };
+        host_draw.borrow().anim.draw(cr, &stage);
+    });
+
+    let host_tick = anim_host.clone();
+    anim_area.add_tick_callback(move |area, clock| {
+        let now = clock.frame_time();
+        let mut h = host_tick.borrow_mut();
+        let dt = match h.last_us {
+            Some(prev) => ((now - prev) as f64 / 1_000_000.0).min(1.0 / 30.0),
+            None => 0.0,
+        };
+        h.last_us = Some(now);
+        if dt > 0.0 {
+            h.anim.tick(dt);
+        }
+        let finished = h.anim.is_finished();
+        area.queue_draw();
+        // Stop ticking once a one-shot is done, so the window isn't redrawn
+        // forever; looping animations report not-finished and keep going.
+        if finished {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+
+    // Animation floats over the prompt content, both inside the masked card.
+    let card_overlay = Overlay::new();
+    card_overlay.set_hexpand(true);
+    card_overlay.set_vexpand(true);
+    card_overlay.set_child(Some(&content));
+    card_overlay.add_overlay(&anim_area);
+
     let container = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .build();
     container.add_css_class("popup");
+    container.set_overflow(Overflow::Hidden); // masks the animation to the rounded border
     container.set_margin_end(8);
     container.set_margin_bottom(8);
-
-    container.append(&overlay);
-    container.append(&completions_box);
+    container.append(&card_overlay);
 
     let project_label = Label::builder()
         .halign(Align::End)
@@ -755,6 +863,7 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
 
     window.present();
     text_view.grab_focus();
+    anim_host.borrow_mut().anim.show(); // pop the animation in on open
 }
 
 fn render_completions(container: &GtkBox, state: &State) {

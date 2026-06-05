@@ -44,6 +44,17 @@ pub struct Approach {
     pub exit_to: Dir,
 }
 
+/// Whether an animation plays a single cycle, loops, or holds.
+#[derive(Debug, Clone, Copy)]
+pub enum Lifecycle {
+    /// Enter, then idle forever until `hide()` is called externally.
+    Hold,
+    /// Enter, idle `hold` seconds, exit, then stay done. A single run.
+    Once { hold: f64 },
+    /// Enter, idle `hold` s, exit, wait `gap` s, then repeat — forever.
+    Loop { hold: f64, gap: f64 },
+}
+
 /// Composes a [`Content`] (appearance) with spring-driven directional motion.
 /// This is where every content — sprite or vector — gets identical placement,
 /// directional travel, and squash-and-stretch.
@@ -52,9 +63,17 @@ pub struct Staged<C: Content> {
     approach: Approach,
     spring: Spring,
     squash_k: f64,
+    lifecycle: Lifecycle,
+    /// If set, scale the content so its natural height ≈ this fraction of the
+    /// stage height. `None` leaves it unscaled (e.g. the guy, who overflows and
+    /// peeks).
+    fit: Option<f64>,
+    /// The minimum card height (px) this animation wants in order to fit.
+    min_card: i32,
     target: f64,
     t: f64,
     phase: Phase,
+    since: f64, // seconds spent in the current settled phase
 }
 
 impl<C: Content> Staged<C> {
@@ -64,10 +83,32 @@ impl<C: Content> Staged<C> {
             approach,
             spring,
             squash_k,
+            lifecycle: Lifecycle::Hold,
+            fit: None,
+            min_card: 0,
             target: 0.0,
             t: 0.0,
             phase: Phase::Done,
+            since: 0.0,
         }
+    }
+
+    pub fn with_lifecycle(mut self, lifecycle: Lifecycle) -> Self {
+        self.lifecycle = lifecycle;
+        self
+    }
+
+    /// Scale the content to fit the card: its natural height becomes ~`frac` of
+    /// the stage height.
+    pub fn with_fit(mut self, frac: f64) -> Self {
+        self.fit = Some(frac);
+        self
+    }
+
+    /// Request a minimum card height (px) so the content has room.
+    pub fn with_min_card(mut self, px: i32) -> Self {
+        self.min_card = px;
+        self
     }
 }
 
@@ -88,6 +129,7 @@ impl<C: Content> Animation for Staged<C> {
 
     fn tick(&mut self, dt: f64) -> Phase {
         self.t += dt; // unbounded: drives frames / idle forever
+        let prev = self.phase;
         self.spring.step(self.target, dt);
         if self.spring.settled(self.target) {
             self.phase = if self.target >= 0.5 {
@@ -96,6 +138,27 @@ impl<C: Content> Animation for Staged<C> {
                 Phase::Done
             };
         }
+        // Time spent in the current settled phase, reset on transitions.
+        self.since = if self.phase == prev { self.since + dt } else { 0.0 };
+
+        // Self-driving lifecycle: auto-exit after a hold, and (for Loop)
+        // re-enter after a gap.
+        match self.lifecycle {
+            Lifecycle::Hold => {}
+            Lifecycle::Once { hold } => {
+                if self.phase == Phase::Idle && self.since >= hold {
+                    self.hide();
+                }
+            }
+            Lifecycle::Loop { hold, gap } => {
+                if self.phase == Phase::Idle && self.since >= hold {
+                    self.hide();
+                } else if self.phase == Phase::Done && self.since >= gap {
+                    self.show();
+                }
+            }
+        }
+
         self.phase
     }
 
@@ -129,11 +192,31 @@ impl<C: Content> Animation for Staged<C> {
         cr.rotate(axis);
         cr.scale(1.0 + stretch, 1.0 - 0.5 * stretch);
         cr.rotate(-axis);
+        // Scale-to-card: shrink the content to fit the prompt height.
+        if let Some(frac) = self.fit {
+            let (_, nh) = self.content.natural_size();
+            if nh > 0.0 {
+                let s = (frac * stage.h / nh).clamp(0.05, 4.0);
+                cr.scale(s, s);
+            }
+        }
         self.content.draw(cr, self.t);
         cr.restore().unwrap();
     }
 
     fn is_exit_done(&self) -> bool {
         matches!(self.phase, Phase::Done)
+    }
+
+    fn min_card_height(&self) -> i32 {
+        self.min_card
+    }
+
+    fn is_finished(&self) -> bool {
+        match self.lifecycle {
+            // A looping animation is never finished — its Done is transient.
+            Lifecycle::Loop { .. } => false,
+            _ => matches!(self.phase, Phase::Done),
+        }
     }
 }
