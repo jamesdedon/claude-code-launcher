@@ -755,6 +755,13 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
     let project_label_for_key = project_label.clone();
     let completions_for_key = completions_box.clone();
 
+    // One shared guard for every close path. Closing the window makes it
+    // inactive, which re-fires the active-notify handler; without a single
+    // shared flag, one close path can trigger another and GTK then removes the
+    // window from its toplevels store twice (the g_list_store_remove critical).
+    let closing = Rc::new(Cell::new(false));
+    let closing_for_key = closing.clone();
+
     let key_controller = EventControllerKey::new();
     key_controller.set_propagation_phase(PropagationPhase::Capture);
     key_controller.connect_key_pressed(move |_, key, _, modifiers| {
@@ -769,7 +776,9 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
                 render_completions(&completions_for_key, &st);
                 return glib::Propagation::Stop;
             }
-            window_for_key.close();
+            if !closing_for_key.replace(true) {
+                window_for_key.close();
+            }
             return glib::Propagation::Stop;
         }
 
@@ -798,7 +807,9 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
                     if let Some(p) = prompt_opt {
                         state_for_key.borrow_mut().record(p);
                     }
-                    window_for_key.close();
+                    if !closing_for_key.replace(true) {
+                        window_for_key.close();
+                    }
                 }
                 Err(e) => show_error(&window_for_key, "Failed to launch", &e.to_string()),
             }
@@ -853,15 +864,17 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
 
     let buffer_for_active = text_view.buffer();
     let was_active = Rc::new(Cell::new(false));
+    let closing_for_active = closing.clone();
     window.connect_is_active_notify(move |w| {
         if w.is_active() {
             was_active.set(true);
-        } else if was_active.get() {
+        } else if was_active.get() && !closing_for_active.get() {
             if suppress_close.get() {
                 suppress_close.set(false);
                 return;
             }
             if buffer_for_active.char_count() == 0 {
+                closing_for_active.set(true);
                 w.close();
             }
         }
