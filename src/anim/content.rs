@@ -2,6 +2,8 @@
 //! vector animations.
 
 use gtk4::cairo;
+use std::fs::File;
+use std::path::Path;
 
 /// What an animation *looks like*, decoupled from how it moves. Implemented by
 /// both [`SpriteContent`] and vector content (e.g. [`super::VectorGuy`]) — the
@@ -161,6 +163,49 @@ impl SpriteContent {
         );
         s.pixelated = true;
         s
+    }
+
+    /// Build sprite content from a decoded sheet surface (used by the file
+    /// loader). Chainable with [`SpriteContent::pixelated`].
+    pub fn pixelated(mut self, v: bool) -> Self {
+        self.pixelated = v;
+        self
+    }
+
+    /// Decode a PNG sprite sheet into a backing surface for blitting.
+    pub fn load_sheet(path: &Path) -> Result<cairo::ImageSurface, String> {
+        let mut f = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        cairo::ImageSurface::create_from_png(&mut f)
+            .map_err(|e| format!("decode {}: {e}", path.display()))
+    }
+
+    /// Write the backing sheet to a PNG (used to export procedural sheets to
+    /// real files for the data-driven loader to consume).
+    pub fn save_sheet_png(&self, path: &Path) -> Result<(), String> {
+        let mut f = File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+        self.sheet
+            .write_to_png(&mut f)
+            .map_err(|e| format!("write {}: {e}", path.display()))
+    }
+
+    // Geometry getters, so an exporter can emit a matching manifest.
+    pub fn frame_count(&self) -> usize {
+        self.frames
+    }
+    pub fn columns(&self) -> usize {
+        self.cols
+    }
+    pub fn frame_size(&self) -> (f64, f64) {
+        (self.fw, self.fh)
+    }
+    pub fn fps(&self) -> f64 {
+        self.fps
+    }
+    pub fn anchor_px(&self) -> (f64, f64) {
+        self.anchor
+    }
+    pub fn is_pixelated(&self) -> bool {
+        self.pixelated
     }
 }
 

@@ -25,6 +25,7 @@ pub use motion::{Approach, Lifecycle, Spring, Staged};
 pub use stage::{Anchor, Dir, Stage};
 
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 /// Where an animation is in its lifecycle. The `Idle` phase is open-ended — it
 /// ticks forever until `hide()` — so step count is unbounded by construction.
@@ -85,6 +86,10 @@ pub struct AnimSpec {
     /// "once" | "loop" | "hold". Overrides the animation's default lifecycle.
     #[serde(default)]
     pub cycle: Option<String>,
+    /// Path to a sprite-sheet manifest (`.toml`). When set, loads a data-driven
+    /// animation from that file instead of a built-in `name`.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 impl Default for AnimSpec {
@@ -94,6 +99,7 @@ impl Default for AnimSpec {
             enter_from: None,
             exit_to: None,
             cycle: None,
+            file: None,
         }
     }
 }
@@ -163,9 +169,180 @@ impl Animation for NoAnim {
     }
 }
 
+/// A data-driven sprite animation: a `.toml` sitting next to a PNG sheet. The
+/// sprite-sheet fields describe the frames; the motion fields reuse the same
+/// vocabulary as built-in animations.
+#[derive(Debug, Clone, Deserialize)]
+struct SpriteManifest {
+    sheet: String,
+    frames: usize,
+    #[serde(default)]
+    columns: Option<usize>,
+    #[serde(default)]
+    frame_width: Option<f64>,
+    #[serde(default)]
+    frame_height: Option<f64>,
+    #[serde(default = "default_fps")]
+    fps: f64,
+    #[serde(default)]
+    anchor: Option<FrameAnchor>,
+    #[serde(default = "default_play")]
+    play: String,
+    #[serde(default)]
+    pixelated: bool,
+    // Motion (all optional; config block overrides these).
+    #[serde(default)]
+    cycle: Option<String>,
+    #[serde(default)]
+    enter_from: Option<DirSpec>,
+    #[serde(default)]
+    exit_to: Option<DirSpec>,
+    #[serde(default)]
+    rest: Option<[f64; 4]>, // nx, ny, dx, dy
+    #[serde(default)]
+    fit: Option<f64>,
+    #[serde(default)]
+    min_card: Option<i32>,
+    #[serde(default)]
+    stiffness: Option<f64>,
+    #[serde(default)]
+    damping: Option<f64>,
+    #[serde(default)]
+    squash: Option<f64>,
+}
+
+fn default_fps() -> f64 {
+    12.0
+}
+fn default_play() -> String {
+    "loop".to_string()
+}
+
+/// The frame anchor: a named position ("center"/"bottom"/"top") or pixels.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum FrameAnchor {
+    Named(String),
+    Xy { x: f64, y: f64 },
+}
+
+fn parse_play(s: &str) -> Play {
+    match s.to_ascii_lowercase().as_str() {
+        "once" => Play::Once,
+        "pingpong" | "ping-pong" => Play::PingPong,
+        _ => Play::Loop,
+    }
+}
+
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// Load a data-driven sprite animation from a manifest file.
+fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Box<dyn Animation>, String> {
+    let path = expand_tilde(file);
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let m: SpriteManifest =
+        toml::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
+
+    // Resolve the sheet relative to the manifest's directory.
+    let sheet_rel = expand_tilde(&m.sheet);
+    let sheet_path = if sheet_rel.is_absolute() {
+        sheet_rel
+    } else {
+        path.parent().unwrap_or(Path::new(".")).join(sheet_rel)
+    };
+
+    let surface = SpriteContent::load_sheet(&sheet_path)?;
+    let (sheet_w, sheet_h) = (surface.width() as f64, surface.height() as f64);
+    let cols = m.columns.unwrap_or(m.frames).max(1);
+    let rows = m.frames.div_ceil(cols).max(1);
+    let fw = m.frame_width.unwrap_or(sheet_w / cols as f64);
+    let fh = m.frame_height.unwrap_or(sheet_h / rows as f64);
+
+    let anchor = match m.anchor.clone().unwrap_or(FrameAnchor::Named("center".to_string())) {
+        FrameAnchor::Xy { x, y } => (x, y),
+        FrameAnchor::Named(n) => match n.to_ascii_lowercase().as_str() {
+            "bottom" | "bottom-center" => (fw / 2.0, fh),
+            "top" | "top-center" => (fw / 2.0, 0.0),
+            _ => (fw / 2.0, fh / 2.0),
+        },
+    };
+
+    let content = SpriteContent::new(
+        surface,
+        fw,
+        fh,
+        cols,
+        m.frames,
+        m.fps,
+        parse_play(&m.play),
+        anchor,
+    )
+    .pixelated(m.pixelated);
+
+    // Motion: config block beats manifest beats default.
+    let enter = spec
+        .enter_from
+        .as_ref()
+        .or(m.enter_from.as_ref())
+        .map(DirSpec::to_dir)
+        .unwrap_or(Dir::Deg(180.0));
+    let exit = spec
+        .exit_to
+        .as_ref()
+        .or(m.exit_to.as_ref())
+        .map(DirSpec::to_dir)
+        .unwrap_or(Dir::Deg(0.0));
+    let rest = m
+        .rest
+        .map(|r| Anchor::new(r[0], r[1], r[2], r[3]))
+        .unwrap_or(Anchor::new(0.5, 0.5, 0.0, 0.0));
+    let cyc = spec
+        .cycle
+        .as_deref()
+        .or(m.cycle.as_deref())
+        .and_then(parse_cycle)
+        .unwrap_or(Lifecycle::Loop { hold: 2.5, gap: 1.0 });
+    let spring = Spring::new(m.stiffness.unwrap_or(200.0), m.damping.unwrap_or(16.0));
+
+    let mut staged = Staged::new(
+        content,
+        Approach {
+            rest,
+            enter_from: enter,
+            exit_to: exit,
+        },
+        spring,
+        m.squash.unwrap_or(0.02),
+    )
+    .with_lifecycle(cyc);
+    if let Some(f) = m.fit {
+        staged = staged.with_fit(f);
+    }
+    if let Some(mc) = m.min_card {
+        staged = staged.with_min_card(mc);
+    }
+    Ok(Box::new(staged))
+}
+
 /// The registry: resolve a [`AnimSpec`] into a ready-to-drive animation.
 /// Unknown names fall back to the little guy.
 pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
+    // A `file = "..."` manifest takes precedence over a built-in `name`.
+    if let Some(file) = &spec.file {
+        return build_from_file(file, spec).unwrap_or_else(|e| {
+            eprintln!("animation: failed to load {file}: {e}");
+            Box::new(NoAnim)
+        });
+    }
+
     let enter = |fallback: Dir| spec.enter_from.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
     let exit = |fallback: Dir| spec.exit_to.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
     // Config `cycle` overrides the per-animation default lifecycle.

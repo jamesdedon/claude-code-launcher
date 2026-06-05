@@ -252,6 +252,12 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 # name = "f1"
 # cycle = "once"
 #
+# A data-driven sprite from a file (PNG sheet + manifest); see the manifest
+# for its own defaults, overridable here:
+# [animation]
+# file = "~/.config/claude-code-launcher/anims/f1.toml"
+# cycle = "once"
+#
 # Explicitly no animation:
 # [animation]
 # name = "none"
