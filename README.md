@@ -118,3 +118,7 @@ The popup is a chromeless translucent box with rounded corners. It appears where
 ## How it works
 
 The binary spawns your configured terminal command as a child process, with `{cwd}` and `{prompt}` substituted in. If it detects it's running inside a Flatpak sandbox or Toolbox container (via `/run/.containerenv`), it prepends `flatpak-spawn --host` so the host terminal is launched instead of trying (and failing) to find one inside the sandbox.
+
+## Animations
+
+The prompt card can optionally host a small animation — a built-in, or a sprite sheet you supply as a PNG + TOML manifest. Configure it with an `[animation]` block; with no such block, none runs. See [docs/animations.md](docs/animations.md) for the full spec (sheet layout, manifest fields, direction/lifecycle/fit options, and the authoring workflow).
