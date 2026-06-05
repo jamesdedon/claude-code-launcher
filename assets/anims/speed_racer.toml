@@ -1,0 +1,19 @@
+# Speed Racer: the driver pans into view on open, then launches off the line as
+# the car when you submit. Edit any number below; no rebuild needed.
+
+[spawn]
+figure   = "racer"
+rest     = [0.75, 0.5, 0.0, 0.0]   # right quarter of the card
+fit      = 0.92
+min_card = 120
+# A vertical pan up the figure (frame pixels / seconds):
+pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+
+[submit]
+figure     = "f1"
+cycle      = "once"
+enter_from = "left"
+exit_to    = "right"
+rest       = [0.25, 0.62, 0.0, 0.0]
+fit        = 0.85
+min_card   = 96

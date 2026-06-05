@@ -1,0 +1,7 @@
+# A little guy peeking up over the bottom edge on open, then slinking away.
+[spawn]
+figure     = "little_guy"
+cycle      = "once"
+enter_from = "bottom"
+exit_to    = "bottom"
+rest       = [1.0, 1.0, -58.0, 37.0]

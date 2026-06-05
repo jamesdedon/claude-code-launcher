@@ -14,6 +14,7 @@
 //! Selection is by a config string via [`build`]: change the string, change
 //! the guy.
 
+pub mod blossoms;
 pub mod content;
 pub mod little_guy;
 pub mod motion;
@@ -458,10 +459,9 @@ fn build_section(
     base_dir: &Path,
     slot: Trigger,
 ) -> Result<Box<dyn Animation>, String> {
-    // The little guy is the only vector built-in; it can't pan.
+    // The little guy is the only vector built-in figure; it can't pan.
     if m.figure.as_deref() == Some("little_guy") {
-        let d = Defaults::little_guy();
-        return Ok(apply_motion(VectorGuy::new(), m, &d, None, slot));
+        return Ok(apply_motion(VectorGuy::new(), m, &Defaults::little_guy(), None, slot));
     }
     let (content, d) = if let Some(fig) = &m.figure {
         match fig.as_str() {
@@ -542,90 +542,28 @@ pub fn load_pack(file: &Path) -> (Box<dyn Animation>, Box<dyn Animation>) {
     }
 }
 
-/// The built-in animation packs, seeded as editable files on first run. Each
-/// references a built-in `figure`, so no PNGs ship — just small TOML you can
-/// edit, copy, or delete.
-pub const BUILTIN_PACKS: &[(&str, &str)] = &[
-    ("speed_racer.toml", SPEED_RACER_PACK),
-    ("racer.toml", RACER_PACK),
-    ("f1.toml", F1_PACK),
-    ("little_guy.toml", LITTLE_GUY_PACK),
-    ("spinner.toml", SPINNER_PACK),
-];
+/// The default animation packs, embedded from `assets/anims/` at compile time.
+/// The code never enumerates or names them — adding a built-in means dropping a
+/// file into that folder, nothing here changes.
+static BUILTIN_ANIMS: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/anims");
 
-/// Seed the built-in packs into `dir` (creating it), writing only those that are
-/// missing — so a user's edits and deletions stick across runs.
+/// Seed the bundled default packs into `dir` (creating it), copying only files
+/// that are missing — so a user's edits and deletions stick across runs.
 pub fn seed_builtin_packs(dir: &Path) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("animation: create {}: {e}", dir.display());
         return;
     }
-    for (name, body) in BUILTIN_PACKS {
+    for file in BUILTIN_ANIMS.files() {
+        let Some(name) = file.path().file_name() else {
+            continue;
+        };
         let path = dir.join(name);
         if path.exists() {
             continue;
         }
-        if let Err(e) = std::fs::write(&path, body) {
+        if let Err(e) = std::fs::write(&path, file.contents()) {
             eprintln!("animation: seed {}: {e}", path.display());
         }
     }
 }
-
-const SPEED_RACER_PACK: &str = r#"# Speed Racer: the driver pans into view on open, then launches off the line as
-# the car when you submit. Edit any number below; no rebuild needed.
-
-[spawn]
-figure   = "racer"
-rest     = [0.75, 0.5, 0.0, 0.0]   # right quarter of the card
-fit      = 0.92
-min_card = 120
-# A vertical pan up the figure (frame pixels / seconds):
-pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
-
-[submit]
-figure     = "f1"
-cycle      = "once"
-enter_from = "left"
-exit_to    = "right"
-rest       = [0.25, 0.62, 0.0, 0.0]
-fit        = 0.85
-min_card   = 96
-"#;
-
-const RACER_PACK: &str = r#"# Just the Speed Racer driver, panning into view on open (no car on submit).
-[spawn]
-figure   = "racer"
-rest     = [0.75, 0.5, 0.0, 0.0]
-fit      = 0.92
-min_card = 120
-pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
-"#;
-
-const F1_PACK: &str = r#"# Just the 8-bit F1 car, launching off the line when you submit.
-[submit]
-figure     = "f1"
-cycle      = "once"
-enter_from = "left"
-exit_to    = "right"
-rest       = [0.25, 0.62, 0.0, 0.0]
-fit        = 0.85
-min_card   = 96
-"#;
-
-const LITTLE_GUY_PACK: &str = r#"# A little guy peeking up over the bottom edge on open, then slinking away.
-[spawn]
-figure     = "little_guy"
-cycle      = "once"
-enter_from = "bottom"
-exit_to    = "bottom"
-rest       = [1.0, 1.0, -58.0, 37.0]
-"#;
-
-const SPINNER_PACK: &str = r#"# A looping sprite drifting in from the right on open.
-[spawn]
-figure   = "spinner"
-cycle    = "loop"
-rest     = [0.5, 0.5, 0.0, 0.0]
-fit      = 0.8
-min_card = 96
-"#;

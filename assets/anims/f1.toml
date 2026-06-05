@@ -1,0 +1,9 @@
+# Just the 8-bit F1 car, launching off the line when you submit.
+[submit]
+figure     = "f1"
+cycle      = "once"
+enter_from = "left"
+exit_to    = "right"
+rest       = [0.25, 0.62, 0.0, 0.0]
+fit        = 0.85
+min_card   = 96

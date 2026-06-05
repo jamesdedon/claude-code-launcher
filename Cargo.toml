@@ -10,3 +10,6 @@ toml = "1.1.2"
 # Already in the tree via gtk4; we only enable its `png` feature (system
 # libpng) to load/save sprite-sheet PNGs. No new crate is added.
 cairo-rs = { version = "0.22", features = ["png"] }
+# Embeds the default animation packs in assets/anims/ so the binary can seed
+# them on first run — the code never enumerates or names them.
+include_dir = "0.7"

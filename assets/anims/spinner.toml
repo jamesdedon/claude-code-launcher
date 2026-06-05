@@ -1,0 +1,7 @@
+# A looping sprite drifting in from the right on open.
+[spawn]
+figure   = "spinner"
+cycle    = "loop"
+rest     = [0.5, 0.5, 0.0, 0.0]
+fit      = 0.8
+min_card = 96

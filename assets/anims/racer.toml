@@ -1,0 +1,7 @@
+# Just the Speed Racer driver, panning into view on open (no car on submit).
+[spawn]
+figure   = "racer"
+rest     = [0.75, 0.5, 0.0, 0.0]
+fit      = 0.92
+min_card = 120
+pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
