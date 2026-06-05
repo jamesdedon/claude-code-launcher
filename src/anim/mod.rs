@@ -142,6 +142,21 @@ pub fn build(spec: &AnimSpec) -> Box<dyn Animation> {
                 0.02,
             ))
         }
+        // An 8-bit F1 car: pops in from the left fighting for grip (under-damped
+        // spring), then takes off to the right.
+        "f1" | "f1_car" => {
+            let approach = Approach {
+                rest: Anchor::new(0.25, 0.62, 0.0, 0.0), // rest in the left quarter
+                enter_from: enter(Dir::Deg(180.0)),      // from the left
+                exit_to: exit(Dir::Deg(0.0)),            // off to the right
+            };
+            Box::new(Staged::new(
+                SpriteContent::f1_car(),
+                approach,
+                Spring::new(240.0, 11.0), // under-damped: it fights for speed
+                0.02,
+            ))
+        }
         // Default: the little guy peeking up over the bottom edge.
         _ => {
             let approach = Approach {
