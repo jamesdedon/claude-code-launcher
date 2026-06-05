@@ -1,4 +1,4 @@
-use claude_code_launcher::anim::{self, AnimSpec, Animation, Stage};
+use claude_code_launcher::anim::{self, Animation, Stage};
 use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, AlertDialog, Align, Application, ApplicationWindow, Box as GtkBox,
@@ -137,30 +137,39 @@ struct Config {
     resume_args: Vec<String>,
     #[serde(default)]
     theme: Theme,
-    /// One `[animation]` table or an array of `[[animation]]` tables. Each entry
-    /// self-routes to a slot (open vs. submit) by its `trigger`. Absent → none.
-    #[serde(default, rename = "animation")]
-    animation: Option<AnimConfig>,
+    /// One `[animation]` line pointing at an animation pack — `name` resolves to
+    /// `<config>/anims/<name>.toml`, or `file` to an explicit path. The pack's
+    /// `[spawn]`/`[submit]` sections (both optional) drive the two slots.
+    #[serde(default)]
+    animation: Option<AnimRef>,
 }
 
-/// The `[animation]` config: either a single table (one animation) or an array
-/// of `[[animation]]` tables (several). Each entry declares — or inherits from
-/// its manifest / built-in default — a `trigger` that routes it to a slot, so
-/// you can have both a spawn and a submit animation at once.
+/// A reference to an animation pack file in the config.
 #[derive(Deserialize, Debug)]
-#[serde(untagged)]
-enum AnimConfig {
-    One(AnimSpec),
-    Many(Vec<AnimSpec>),
+struct AnimRef {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
 }
 
-impl AnimConfig {
-    fn specs(&self) -> Vec<AnimSpec> {
-        match self {
-            AnimConfig::One(s) => vec![s.clone()],
-            AnimConfig::Many(v) => v.clone(),
+impl AnimRef {
+    /// Resolve to the pack file path: an explicit `file`, else `name` in the
+    /// drop-in anims directory.
+    fn resolve(&self, anims_dir: &Path) -> Option<PathBuf> {
+        if let Some(file) = &self.file {
+            return Some(anim::expand_tilde(file));
         }
+        self.name.as_ref().map(|n| anims_dir.join(format!("{n}.toml")))
     }
+}
+
+/// The drop-in animations directory, next to `config.toml`.
+fn anims_dir() -> PathBuf {
+    config_path()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("anims")
 }
 
 fn default_resume_args() -> Vec<String> {
@@ -243,41 +252,23 @@ terminal_command = ["ptyxis", "--new-window", "--working-directory", "{cwd}", "-
 # pill_font_size = "11pt"
 # completion_font_size = "11pt"
 
-# Optional: animation(s) hosted in the prompt card. Each animation declares a
-# `trigger` that routes it to a slot:
-#   trigger = "spawn"   (default) — plays when the launcher opens
-#   trigger = "submit"            — plays on Enter; the window close waits for it
-# A submit animation always runs once (any `cycle` is coerced to "once") so the
-# close can't hang. With no [animation] at all, nothing runs.
+# Optional: an animation hosted in the prompt card. Point [animation] at a pack
+# in the drop-in anims/ folder (seeded next to this file). A pack is one .toml
+# with an optional [spawn] section (plays on open) and/or [submit] section
+# (plays on Enter) — both can fire from a single file. Drop a new pack in the
+# folder to add one; delete a file to remove it. Edit a pack's numbers and just
+# relaunch — no rebuild.
 #
-# Use ONE [animation] table for a single animation:
 # [animation]
-# name = "little_guy"
-# cycle = "once"
+# name = "speed_racer"   # -> anims/speed_racer.toml (driver pans in, car launches)
 #
-# ...or an array of [[animation]] tables to have BOTH (each self-routes). The
-# headline pairing — the Speed Racer driver pans into view on open, then hands
-# off to the car launching off the line when you submit:
-# [[animation]]
-# name = "racer"               # trigger defaults to "spawn"
-#
-# [[animation]]
-# name = "f1"                  # the F1 car defaults to trigger = "submit"
-#
-# Per-animation fields (all optional, override the manifest / built-in default):
-# cycle      = "once" | "loop" | "hold"
-# trigger    = "spawn" | "submit"
-# enter_from / exit_to = degrees (e.g. 270), a named edge ("bottom", "left",
-#              "right", "top", "bottom-right", ...), or scalars { dx = 0, dy = 200 }.
-#
-# Built-ins: "little_guy" (peeks over the bottom edge), "racer" (Speed Racer
-# driver; slow feet-to-face pan, holds till submit), "spinner" (looping demo
-# sprite), "f1" (8-bit car, defaults to submit), "none"/"off" (nothing).
-#
-# A data-driven sprite from a file (PNG sheet + manifest); the manifest can
-# itself declare `trigger`, so this lands in the right slot on its own:
+# Seeded packs: speed_racer (driver + car), racer (driver only), f1 (car only),
+# little_guy, spinner. Or point at an explicit path:
 # [animation]
-# file = "~/.config/claude-code-launcher/anims/f1.toml"
+# file = "~/some/where/my_pack.toml"
+#
+# With no [animation] at all, nothing runs. See docs/animations.md for the pack
+# format (sections, figures, sheets, motion, and the vertical pan).
 "##;
 
 fn write_default_config(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -539,6 +530,10 @@ fn activate(app: &Application) {
 
     install_css(&config.theme);
 
+    // Seed the drop-in animation packs (only the missing ones) so the folder is
+    // there to browse, edit, copy, or delete.
+    anim::seed_builtin_packs(&anims_dir());
+
     let projects = match build_project_list(&config) {
         Ok(p) => p,
         Err(msg) => {
@@ -616,9 +611,16 @@ fn build_ui(app: &Application, config: &Config, projects: Vec<Project>) {
         .build();
 
     // Build the hosted animation up front so the prompt can be sized to give it
-    // room (animations that need it request a minimum card height).
-    let anim_specs = config.animation.as_ref().map(AnimConfig::specs).unwrap_or_default();
-    let (open, submit) = anim::build_all(&anim_specs);
+    // room (animations that need it request a minimum card height). The config
+    // points at a pack file in the drop-in anims directory; its spawn/submit
+    // sections drive the two slots.
+    let (open, submit) = match config.animation.as_ref().and_then(|r| r.resolve(&anims_dir())) {
+        Some(path) => anim::load_pack(&path),
+        None => (
+            Box::new(anim::NoAnim) as Box<dyn Animation>,
+            Box::new(anim::NoAnim) as Box<dyn Animation>,
+        ),
+    };
     let anim_host = Rc::new(RefCell::new(AnimHost {
         open,
         submit,

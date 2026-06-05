@@ -20,9 +20,8 @@ pub mod motion;
 pub mod racer;
 pub mod stage;
 
-pub use content::{Content, Play, SpriteContent};
+pub use content::{Content, PanParams, Play, SpriteContent};
 pub use little_guy::VectorGuy;
-pub use racer::Racer;
 pub use motion::{Approach, Lifecycle, Spring, Staged};
 pub use stage::{Anchor, Dir, Stage};
 
@@ -67,51 +66,6 @@ pub trait Animation {
     }
 }
 
-/// Config-facing selection. `name` maps to a registered animation; the optional
-/// direction overrides accept **degrees**, a **named edge**, or raw **scalars**.
-///
-/// ```toml
-/// [animation]
-/// name = "little_guy"
-/// enter_from = 270            # degrees (up from below)
-/// exit_to    = { dx = -180, dy = 0 }   # scalars (slink left)
-/// # enter_from = "bottom"     # named sugar -> 270
-/// ```
-#[derive(Debug, Clone, Deserialize)]
-pub struct AnimSpec {
-    #[serde(default = "default_name")]
-    pub name: String,
-    #[serde(default)]
-    pub enter_from: Option<DirSpec>,
-    #[serde(default)]
-    pub exit_to: Option<DirSpec>,
-    /// "once" | "loop" | "hold". Overrides the animation's default lifecycle.
-    #[serde(default)]
-    pub cycle: Option<String>,
-    /// "spawn" (on open) | "submit" (on Enter). Overrides the manifest / built-in
-    /// default. A submit animation always runs once and the window close waits
-    /// on it.
-    #[serde(default)]
-    pub trigger: Option<String>,
-    /// Path to a sprite-sheet manifest (`.toml`). When set, loads a data-driven
-    /// animation from that file instead of a built-in `name`.
-    #[serde(default)]
-    pub file: Option<String>,
-}
-
-impl Default for AnimSpec {
-    fn default() -> Self {
-        Self {
-            name: default_name(),
-            enter_from: None,
-            exit_to: None,
-            cycle: None,
-            trigger: None,
-            file: None,
-        }
-    }
-}
-
 /// Parse a config `cycle` string into a [`Lifecycle`] with default timings.
 fn parse_cycle(s: &str) -> Option<Lifecycle> {
     match s.to_ascii_lowercase().as_str() {
@@ -147,10 +101,6 @@ fn as_single_run(lc: Lifecycle) -> Lifecycle {
         Lifecycle::Once { hold } | Lifecycle::Loop { hold, .. } => Lifecycle::Once { hold },
         Lifecycle::Hold => Lifecycle::Once { hold: 1.0 },
     }
-}
-
-fn default_name() -> String {
-    "little_guy".to_string()
 }
 
 /// A direction as it appears in config: a bare number is **degrees**, a string
@@ -204,13 +154,24 @@ impl Animation for NoAnim {
     }
 }
 
-/// A data-driven sprite animation: a `.toml` sitting next to a PNG sheet. The
-/// sprite-sheet fields describe the frames; the motion fields reuse the same
-/// vocabulary as built-in animations.
-#[derive(Debug, Clone, Deserialize)]
+/// One animation *section* — the body of a `[spawn]` or `[submit]` table (or a
+/// whole flat manifest). The art is either a built-in `figure` (drawn in code)
+/// or a PNG `sheet`; the rest are motion fields. All timings live here, so an
+/// animation file is self-contained.
+#[derive(Debug, Clone, Deserialize, Default)]
 struct SpriteManifest {
-    sheet: String,
+    /// A built-in figure by name: "racer", "f1", "spinner", "little_guy".
+    #[serde(default)]
+    figure: Option<String>,
+    /// A PNG sprite sheet (relative to the manifest). Use instead of `figure`.
+    #[serde(default)]
+    sheet: Option<String>,
+    #[serde(default = "default_frames")]
     frames: usize,
+    /// A vertical pan over a tall figure (see [`PanParams`]); presence switches
+    /// the section to pan motion.
+    #[serde(default)]
+    pan: Option<PanManifest>,
     #[serde(default)]
     columns: Option<usize>,
     #[serde(default)]
@@ -255,6 +216,53 @@ fn default_fps() -> f64 {
 fn default_play() -> String {
     "loop".to_string()
 }
+fn default_frames() -> usize {
+    1
+}
+
+/// The `[pan]` table of a section: a vertical camera pan over a tall figure.
+/// Defaults reproduce the racer. Measurements are frame pixels / seconds.
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct PanManifest {
+    #[serde(default = "pan_default_slice")]
+    slice: f64,
+    #[serde(default = "pan_default_focus")]
+    focus: f64,
+    #[serde(default = "pan_default_reveal")]
+    reveal: f64,
+    #[serde(default = "pan_default_hold")]
+    hold: f64,
+    #[serde(default = "pan_default_exit")]
+    exit: f64,
+}
+
+fn pan_default_slice() -> f64 {
+    72.0
+}
+fn pan_default_focus() -> f64 {
+    -8.0
+}
+fn pan_default_reveal() -> f64 {
+    2.6
+}
+fn pan_default_hold() -> f64 {
+    0.7
+}
+fn pan_default_exit() -> f64 {
+    1.2
+}
+
+impl PanManifest {
+    fn to_params(self) -> PanParams {
+        PanParams {
+            slice: self.slice,
+            focus: self.focus,
+            reveal: self.reveal,
+            hold: self.hold,
+            exit: self.exit,
+        }
+    }
+}
 
 /// The frame anchor: a named position ("center"/"bottom"/"top") or pixels.
 #[derive(Debug, Clone, Deserialize)]
@@ -272,38 +280,163 @@ fn parse_play(s: &str) -> Play {
     }
 }
 
-fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(p)
+/// Expand a leading `~/` to `$HOME`.
+pub fn expand_tilde(p: &str) -> PathBuf {
+    p.strip_prefix("~/")
+        .and_then(|rest| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest)))
+        .unwrap_or_else(|| PathBuf::from(p))
 }
 
-/// Load a data-driven sprite animation from a manifest file.
-fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Built, String> {
-    let path = expand_tilde(file);
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let m: SpriteManifest =
-        toml::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
+/// Default motion for a section before the manifest overrides it.
+struct Defaults {
+    rest: Anchor,
+    enter: Dir,
+    exit: Dir,
+    cycle: Lifecycle,
+    fit: Option<f64>,
+    min_card: i32,
+    stiffness: f64,
+    damping: f64,
+    squash: f64,
+    pan: Option<PanParams>,
+}
 
-    // Resolve the sheet relative to the manifest's directory.
-    let sheet_rel = expand_tilde(&m.sheet);
+impl Defaults {
+    fn sheet() -> Self {
+        Self {
+            rest: Anchor::new(0.5, 0.5, 0.0, 0.0),
+            enter: Dir::Deg(180.0),
+            exit: Dir::Deg(0.0),
+            cycle: Lifecycle::Loop { hold: 2.5, gap: 1.0 },
+            fit: None,
+            min_card: 0,
+            stiffness: 200.0,
+            damping: 16.0,
+            squash: 0.02,
+            pan: None,
+        }
+    }
+    fn racer() -> Self {
+        Self {
+            rest: Anchor::new(0.75, 0.5, 0.0, 0.0),
+            enter: Dir::Xy { dx: 0.0, dy: 0.0 }, // the pan does the motion
+            exit: Dir::Xy { dx: 0.0, dy: 0.0 },
+            cycle: Lifecycle::Hold, // replaced by a pan-timed Once
+            fit: Some(0.92),
+            min_card: 120,
+            stiffness: 220.0,
+            damping: 26.0,
+            squash: 0.0,
+            pan: Some(PanParams { slice: 72.0, focus: -8.0, reveal: 2.6, hold: 0.7, exit: 1.2 }),
+        }
+    }
+    fn f1() -> Self {
+        Self {
+            rest: Anchor::new(0.25, 0.62, 0.0, 0.0),
+            enter: Dir::Deg(180.0),
+            exit: Dir::Deg(0.0),
+            cycle: Lifecycle::Once { hold: 1.0 },
+            fit: Some(0.85),
+            min_card: 96,
+            stiffness: 240.0,
+            damping: 11.0,
+            squash: 0.02,
+            pan: None,
+        }
+    }
+    fn spinner() -> Self {
+        Self {
+            rest: Anchor::new(0.5, 0.5, 0.0, 0.0),
+            enter: Dir::Deg(0.0),
+            exit: Dir::Deg(0.0),
+            cycle: Lifecycle::Loop { hold: 2.5, gap: 1.0 },
+            fit: Some(0.8),
+            min_card: 96,
+            stiffness: 180.0,
+            damping: 16.0,
+            squash: 0.02,
+            pan: None,
+        }
+    }
+    fn little_guy() -> Self {
+        Self {
+            rest: Anchor::new(1.0, 1.0, -58.0, 37.0),
+            enter: Dir::Deg(270.0),
+            exit: Dir::Deg(270.0),
+            cycle: Lifecycle::Once { hold: 1.4 },
+            fit: None,
+            min_card: 0,
+            stiffness: 220.0,
+            damping: 18.0,
+            squash: 0.028,
+            pan: None,
+        }
+    }
+}
+
+/// The pan params for a section: manifest `[pan]` over the figure's default.
+fn resolve_pan(m: &SpriteManifest, d: &Defaults) -> Option<PanParams> {
+    m.pan.map(PanManifest::to_params).or(d.pan)
+}
+
+/// Wrap any content with manifest-over-default motion into a drivable animation.
+/// A `pan` makes the lifecycle a single run timed to the pan; a `submit` slot
+/// also forces a single run so the window can close.
+fn apply_motion<C: Content + 'static>(
+    content: C,
+    m: &SpriteManifest,
+    d: &Defaults,
+    pan: Option<PanParams>,
+    slot: Trigger,
+) -> Box<dyn Animation> {
+    let rest = m
+        .rest
+        .map(|r| Anchor::new(r[0], r[1], r[2], r[3]))
+        .unwrap_or(d.rest);
+    let enter = m.enter_from.as_ref().map(DirSpec::to_dir).unwrap_or(d.enter);
+    let exit = m.exit_to.as_ref().map(DirSpec::to_dir).unwrap_or(d.exit);
+    let cyc = if let Some(p) = pan {
+        Lifecycle::Once { hold: p.total() }
+    } else {
+        let lc = m.cycle.as_deref().and_then(parse_cycle).unwrap_or(d.cycle);
+        if slot == Trigger::Submit { as_single_run(lc) } else { lc }
+    };
+    let spring = Spring::new(m.stiffness.unwrap_or(d.stiffness), m.damping.unwrap_or(d.damping));
+    let mut staged = Staged::new(
+        content,
+        Approach { rest, enter_from: enter, exit_to: exit },
+        spring,
+        m.squash.unwrap_or(d.squash),
+    )
+    .with_lifecycle(cyc);
+    if let Some(f) = m.fit.or(d.fit) {
+        staged = staged.with_fit(f);
+    }
+    let mc = m.min_card.unwrap_or(d.min_card);
+    if mc > 0 {
+        staged = staged.with_min_card(mc);
+    }
+    Box::new(staged)
+}
+
+/// Load a PNG sheet into sprite content using the section's frame geometry.
+fn load_sheet_content(
+    sheet: &str,
+    base_dir: &Path,
+    m: &SpriteManifest,
+) -> Result<SpriteContent, String> {
+    let sheet_rel = expand_tilde(sheet);
     let sheet_path = if sheet_rel.is_absolute() {
         sheet_rel
     } else {
-        path.parent().unwrap_or(Path::new(".")).join(sheet_rel)
+        base_dir.join(sheet_rel)
     };
-
     let surface = SpriteContent::load_sheet(&sheet_path)?;
-    let (sheet_w, sheet_h) = (surface.width() as f64, surface.height() as f64);
+    let (sw, sh) = (surface.width() as f64, surface.height() as f64);
     let cols = m.columns.unwrap_or(m.frames).max(1);
     let rows = m.frames.div_ceil(cols).max(1);
-    let fw = m.frame_width.unwrap_or(sheet_w / cols as f64);
-    let fh = m.frame_height.unwrap_or(sheet_h / rows as f64);
-
+    let fw = m.frame_width.unwrap_or(sw / cols as f64);
+    let fh = m.frame_height.unwrap_or(sh / rows as f64);
     let anchor = match m.anchor.clone().unwrap_or(FrameAnchor::Named("center".to_string())) {
         FrameAnchor::Xy { x, y } => (x, y),
         FrameAnchor::Named(n) => match n.to_ascii_lowercase().as_str() {
@@ -312,203 +445,187 @@ fn build_from_file(file: &str, spec: &AnimSpec) -> Result<Built, String> {
             _ => (fw / 2.0, fh / 2.0),
         },
     };
-
-    let content = SpriteContent::new(
-        surface,
-        fw,
-        fh,
-        cols,
-        m.frames,
-        m.fps,
-        parse_play(&m.play),
-        anchor,
-    )
-    .pixelated(m.pixelated);
-
-    // Motion: config block beats manifest beats default.
-    let enter = spec
-        .enter_from
-        .as_ref()
-        .or(m.enter_from.as_ref())
-        .map(DirSpec::to_dir)
-        .unwrap_or(Dir::Deg(180.0));
-    let exit = spec
-        .exit_to
-        .as_ref()
-        .or(m.exit_to.as_ref())
-        .map(DirSpec::to_dir)
-        .unwrap_or(Dir::Deg(0.0));
-    let rest = m
-        .rest
-        .map(|r| Anchor::new(r[0], r[1], r[2], r[3]))
-        .unwrap_or(Anchor::new(0.5, 0.5, 0.0, 0.0));
-    // Trigger: config beats manifest beats default (spawn). Submit forces once.
-    let trigger = spec
-        .trigger
-        .as_deref()
-        .or(m.trigger.as_deref())
-        .and_then(parse_trigger)
-        .unwrap_or(Trigger::Spawn);
-    let cyc = {
-        let lc = spec
-            .cycle
-            .as_deref()
-            .or(m.cycle.as_deref())
-            .and_then(parse_cycle)
-            .unwrap_or(Lifecycle::Loop { hold: 2.5, gap: 1.0 });
-        if trigger == Trigger::Submit { as_single_run(lc) } else { lc }
-    };
-    let spring = Spring::new(m.stiffness.unwrap_or(200.0), m.damping.unwrap_or(16.0));
-
-    let mut staged = Staged::new(
-        content,
-        Approach {
-            rest,
-            enter_from: enter,
-            exit_to: exit,
-        },
-        spring,
-        m.squash.unwrap_or(0.02),
-    )
-    .with_lifecycle(cyc);
-    if let Some(f) = m.fit {
-        staged = staged.with_fit(f);
-    }
-    if let Some(mc) = m.min_card {
-        staged = staged.with_min_card(mc);
-    }
-    Ok(Built { trigger, anim: Box::new(staged) })
-}
-
-/// A built animation together with the slot it routes to.
-pub struct Built {
-    pub trigger: Trigger,
-    pub anim: Box<dyn Animation>,
-}
-
-/// Resolve a list of specs into the (spawn, submit) slots, routing each by its
-/// trigger. Within a slot the last entry wins (a duplicate logs a warning).
-/// Empty slots get [`NoAnim`], so callers can treat "no animation" uniformly.
-pub fn build_all(specs: &[AnimSpec]) -> (Box<dyn Animation>, Box<dyn Animation>) {
-    let mut spawn: Option<Box<dyn Animation>> = None;
-    let mut submit: Option<Box<dyn Animation>> = None;
-    for spec in specs {
-        let built = build(spec);
-        let slot = match built.trigger {
-            Trigger::Spawn => &mut spawn,
-            Trigger::Submit => &mut submit,
-        };
-        if slot.is_some() {
-            eprintln!(
-                "animation: multiple {:?} animations configured; using the last",
-                built.trigger
-            );
-        }
-        *slot = Some(built.anim);
-    }
-    (
-        spawn.unwrap_or_else(|| Box::new(NoAnim)),
-        submit.unwrap_or_else(|| Box::new(NoAnim)),
+    Ok(
+        SpriteContent::new(surface, fw, fh, cols, m.frames, m.fps, parse_play(&m.play), anchor)
+            .pixelated(m.pixelated),
     )
 }
 
-/// The registry: resolve an [`AnimSpec`] into a ready-to-drive animation and the
-/// slot it plays in. Unknown names fall back to the little guy.
-pub fn build(spec: &AnimSpec) -> Built {
-    // A `file = "..."` manifest takes precedence over a built-in `name`.
-    if let Some(file) = &spec.file {
-        return build_from_file(file, spec).unwrap_or_else(|e| {
-            eprintln!("animation: failed to load {file}: {e}");
-            Built { trigger: Trigger::Spawn, anim: Box::new(NoAnim) }
-        });
+/// Build one section (the body of a `[spawn]`/`[submit]` table) into a
+/// ready-to-drive animation. Art is a built-in `figure` or a PNG `sheet`.
+fn build_section(
+    m: &SpriteManifest,
+    base_dir: &Path,
+    slot: Trigger,
+) -> Result<Box<dyn Animation>, String> {
+    // The little guy is the only vector built-in; it can't pan.
+    if m.figure.as_deref() == Some("little_guy") {
+        let d = Defaults::little_guy();
+        return Ok(apply_motion(VectorGuy::new(), m, &d, None, slot));
     }
-
-    // Trigger: config override, else the per-name default. Most built-ins are
-    // spawn animations; the F1 car is a submit ("launch off the line") by default.
-    let default_trigger = match spec.name.as_str() {
-        "f1" | "f1_car" => Trigger::Submit,
-        _ => Trigger::Spawn,
+    let (content, d) = if let Some(fig) = &m.figure {
+        match fig.as_str() {
+            "racer" | "speed_racer" => (racer::racer_sheet(), Defaults::racer()),
+            "f1" | "f1_car" => (SpriteContent::f1_car(), Defaults::f1()),
+            "spinner" => (SpriteContent::spinner(), Defaults::spinner()),
+            "none" | "off" => return Ok(Box::new(NoAnim)),
+            other => return Err(format!("unknown figure '{other}'")),
+        }
+    } else if let Some(sheet) = &m.sheet {
+        (load_sheet_content(sheet, base_dir, m)?, Defaults::sheet())
+    } else {
+        return Err("animation section needs a `figure` or `sheet`".to_string());
     };
-    let trigger = spec
-        .trigger
-        .as_deref()
-        .and_then(parse_trigger)
-        .unwrap_or(default_trigger);
-
-    let enter = |fallback: Dir| spec.enter_from.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
-    let exit = |fallback: Dir| spec.exit_to.as_ref().map(DirSpec::to_dir).unwrap_or(fallback);
-    // Config `cycle` overrides the per-animation default lifecycle; a submit
-    // animation is always coerced to a single run so the window can close.
-    let lifecycle = |default: Lifecycle| {
-        let lc = spec.cycle.as_deref().and_then(parse_cycle).unwrap_or(default);
-        if trigger == Trigger::Submit { as_single_run(lc) } else { lc }
+    let pan = resolve_pan(m, &d);
+    let content = match pan {
+        Some(p) => content.with_pan(p),
+        None => content,
     };
-
-    let anim: Box<dyn Animation> = match spec.name.as_str() {
-        "none" | "off" => Box::new(NoAnim),
-        // A procedurally-generated sprite, proving sprites run through the exact
-        // same pipeline as the vector guy. Drifts in from the right by default.
-        "spinner" => {
-            let approach = Approach {
-                rest: Anchor::new(0.5, 0.5, 0.0, 0.0),
-                enter_from: enter(Dir::Deg(0.0)),
-                exit_to: exit(Dir::Deg(0.0)),
-            };
-            Box::new(
-                Staged::new(SpriteContent::spinner(), approach, Spring::new(180.0, 16.0), 0.02)
-                    .with_lifecycle(lifecycle(Lifecycle::Loop { hold: 2.5, gap: 1.0 }))
-                    .with_fit(0.8)
-                    .with_min_card(96),
-            )
-        }
-        // An 8-bit F1 car: pops in from the left fighting for grip (under-damped
-        // spring), then takes off to the right.
-        "f1" | "f1_car" => {
-            let approach = Approach {
-                rest: Anchor::new(0.25, 0.62, 0.0, 0.0), // rest in the left quarter
-                enter_from: enter(Dir::Deg(180.0)),      // from the left
-                exit_to: exit(Dir::Deg(0.0)),            // off to the right
-            };
-            Box::new(
-                Staged::new(
-                    SpriteContent::f1_car(),
-                    approach,
-                    Spring::new(240.0, 11.0), // under-damped: it fights for speed
-                    0.02,
-                )
-                .with_lifecycle(lifecycle(Lifecycle::Once { hold: 1.0 })) // a single run
-                .with_fit(0.85)
-                .with_min_card(96),
-            )
-        }
-        // The Speed Racer driver: a tall figure revealed by a slow feet→face
-        // vertical pan, parked in the right quarter; holds until you submit, then
-        // drops away as the car launches. Defaults to the spawn slot.
-        "racer" | "speed_racer" => {
-            let approach = Approach {
-                rest: Anchor::new(0.75, 0.5, 0.0, 0.0), // right quarter, centred
-                enter_from: enter(Dir::Xy { dx: 0.0, dy: 24.0 }), // a gentle rise in
-                exit_to: exit(Dir::Deg(270.0)),                   // sink away on handoff
-            };
-            Box::new(
-                Staged::new(Racer::new(), approach, Spring::new(140.0, 22.0), 0.01)
-                    .with_lifecycle(lifecycle(Lifecycle::Hold))
-                    .with_fit(0.92)
-                    .with_min_card(120),
-            )
-        }
-        // Default: the little guy peeking up over the bottom edge.
-        _ => {
-            let approach = Approach {
-                rest: Anchor::new(1.0, 1.0, -58.0, 37.0),
-                enter_from: enter(Dir::Deg(270.0)),
-                exit_to: exit(Dir::Deg(270.0)),
-            };
-            Box::new(
-                Staged::new(VectorGuy::new(), approach, Spring::new(220.0, 18.0), 0.028)
-                    .with_lifecycle(lifecycle(Lifecycle::Once { hold: 1.4 })),
-            )
-        }
-    };
-    Built { trigger, anim }
+    Ok(apply_motion(content, m, &d, pan, slot))
 }
+
+/// Load an animation **pack** file into the (spawn, submit) slots. A pack has
+/// optional `[spawn]` / `[submit]` tables, each a self-contained section; a flat
+/// manifest is treated as one section routed by its `trigger` (default spawn).
+/// Missing or broken sections fall back to [`NoAnim`].
+pub fn load_pack(file: &Path) -> (Box<dyn Animation>, Box<dyn Animation>) {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("animation: read {}: {e}", file.display());
+            return (Box::new(NoAnim), Box::new(NoAnim));
+        }
+    };
+    let base = file.parent().unwrap_or_else(|| Path::new("."));
+    let section = |m: &SpriteManifest, slot| {
+        build_section(m, base, slot).unwrap_or_else(|e| {
+            eprintln!("animation: {}: {e}", file.display());
+            Box::new(NoAnim) as Box<dyn Animation>
+        })
+    };
+
+    #[derive(Deserialize)]
+    struct Pack {
+        #[serde(default)]
+        spawn: Option<SpriteManifest>,
+        #[serde(default)]
+        submit: Option<SpriteManifest>,
+    }
+    let bundle = toml::from_str::<Pack>(&text)
+        .ok()
+        .filter(|p| p.spawn.is_some() || p.submit.is_some());
+    if let Some(pack) = bundle {
+        let open = pack
+            .spawn
+            .map(|m| section(&m, Trigger::Spawn))
+            .unwrap_or_else(|| Box::new(NoAnim));
+        let submit = pack
+            .submit
+            .map(|m| section(&m, Trigger::Submit))
+            .unwrap_or_else(|| Box::new(NoAnim));
+        return (open, submit);
+    }
+    // Flat single manifest → route by its trigger.
+    match toml::from_str::<SpriteManifest>(&text) {
+        Ok(m) => {
+            let trig = m.trigger.as_deref().and_then(parse_trigger).unwrap_or(Trigger::Spawn);
+            let anim = section(&m, trig);
+            match trig {
+                Trigger::Submit => (Box::new(NoAnim), anim),
+                Trigger::Spawn => (anim, Box::new(NoAnim)),
+            }
+        }
+        Err(e) => {
+            eprintln!("animation: parse {}: {e}", file.display());
+            (Box::new(NoAnim), Box::new(NoAnim))
+        }
+    }
+}
+
+/// The built-in animation packs, seeded as editable files on first run. Each
+/// references a built-in `figure`, so no PNGs ship — just small TOML you can
+/// edit, copy, or delete.
+pub const BUILTIN_PACKS: &[(&str, &str)] = &[
+    ("speed_racer.toml", SPEED_RACER_PACK),
+    ("racer.toml", RACER_PACK),
+    ("f1.toml", F1_PACK),
+    ("little_guy.toml", LITTLE_GUY_PACK),
+    ("spinner.toml", SPINNER_PACK),
+];
+
+/// Seed the built-in packs into `dir` (creating it), writing only those that are
+/// missing — so a user's edits and deletions stick across runs.
+pub fn seed_builtin_packs(dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("animation: create {}: {e}", dir.display());
+        return;
+    }
+    for (name, body) in BUILTIN_PACKS {
+        let path = dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("animation: seed {}: {e}", path.display());
+        }
+    }
+}
+
+const SPEED_RACER_PACK: &str = r#"# Speed Racer: the driver pans into view on open, then launches off the line as
+# the car when you submit. Edit any number below; no rebuild needed.
+
+[spawn]
+figure   = "racer"
+rest     = [0.75, 0.5, 0.0, 0.0]   # right quarter of the card
+fit      = 0.92
+min_card = 120
+# A vertical pan up the figure (frame pixels / seconds):
+pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+
+[submit]
+figure     = "f1"
+cycle      = "once"
+enter_from = "left"
+exit_to    = "right"
+rest       = [0.25, 0.62, 0.0, 0.0]
+fit        = 0.85
+min_card   = 96
+"#;
+
+const RACER_PACK: &str = r#"# Just the Speed Racer driver, panning into view on open (no car on submit).
+[spawn]
+figure   = "racer"
+rest     = [0.75, 0.5, 0.0, 0.0]
+fit      = 0.92
+min_card = 120
+pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+"#;
+
+const F1_PACK: &str = r#"# Just the 8-bit F1 car, launching off the line when you submit.
+[submit]
+figure     = "f1"
+cycle      = "once"
+enter_from = "left"
+exit_to    = "right"
+rest       = [0.25, 0.62, 0.0, 0.0]
+fit        = 0.85
+min_card   = 96
+"#;
+
+const LITTLE_GUY_PACK: &str = r#"# A little guy peeking up over the bottom edge on open, then slinking away.
+[spawn]
+figure     = "little_guy"
+cycle      = "once"
+enter_from = "bottom"
+exit_to    = "bottom"
+rest       = [1.0, 1.0, -58.0, 37.0]
+"#;
+
+const SPINNER_PACK: &str = r#"# A looping sprite drifting in from the right on open.
+[spawn]
+figure   = "spinner"
+cycle    = "loop"
+rest     = [0.5, 0.5, 0.0, 0.0]
+fit      = 0.8
+min_card = 96
+"#;

@@ -30,6 +30,51 @@ pub enum Play {
     PingPong,
 }
 
+/// A vertical "camera pan" over a frame taller than the card: scan a `slice`-tall
+/// window up the figure (feet → `focus`), hold, then continue up and out the top
+/// — leaving the card clear. Drives the racer; expressed in the manifest as a
+/// `[pan]` table. All measurements are in frame pixels / seconds.
+#[derive(Debug, Clone, Copy)]
+pub struct PanParams {
+    /// Visible window height (the slice the card shows at once).
+    pub slice: f64,
+    /// The window-top position to settle/hold at; a small negative value frames
+    /// the very top of the figure with a little headroom.
+    pub focus: f64,
+    /// Seconds: pan from the feet up to `focus`.
+    pub reveal: f64,
+    /// Seconds: hold on `focus`.
+    pub hold: f64,
+    /// Seconds: continue from `focus` up and out of frame.
+    pub exit: f64,
+}
+
+impl PanParams {
+    /// Total pan duration; the host times its lifecycle off this so the animation
+    /// finishes (and redrawing stops) once the figure is gone.
+    pub fn total(&self) -> f64 {
+        self.reveal + self.hold + self.exit
+    }
+
+    /// Top of the visible window in frame space at time `t`, over a frame `fh`
+    /// tall. Feet at the bottom early, panning up to `focus`, then out the top.
+    fn window_top(&self, t: f64, fh: f64) -> f64 {
+        let feet = fh - self.slice;
+        let gone = -self.slice - 8.0; // fully above the window
+        let smooth = |p: f64| {
+            let p = p.clamp(0.0, 1.0);
+            p * p * (3.0 - 2.0 * p)
+        };
+        if t < self.reveal {
+            feet + (self.focus - feet) * smooth(t / self.reveal)
+        } else if t < self.reveal + self.hold {
+            self.focus
+        } else {
+            self.focus + (gone - self.focus) * smooth((t - self.reveal - self.hold) / self.exit)
+        }
+    }
+}
+
 /// A sprite-sheet animation. Frames are blitted from a single backing surface;
 /// nothing here is privileged relative to vector content — it implements the
 /// same [`Content`] trait and rides the same motion pipeline.
@@ -45,6 +90,9 @@ pub struct SpriteContent {
     anchor: (f64, f64),
     /// Sample with nearest-neighbour (crisp pixels) instead of smoothing.
     pixelated: bool,
+    /// If set, the frame is taller than the card and a vertical window pans up
+    /// it over time (the racer). `natural_size` then reports the slice height.
+    pan: Option<PanParams>,
 }
 
 impl SpriteContent {
@@ -69,7 +117,20 @@ impl SpriteContent {
             play,
             anchor,
             pixelated: false,
+            pan: None,
         }
+    }
+
+    /// Turn this into a vertical-pan sprite: the frame is taller than the card
+    /// and a `slice`-tall window pans up it (see [`PanParams`]).
+    pub fn with_pan(mut self, pan: PanParams) -> Self {
+        self.pan = Some(pan);
+        self
+    }
+
+    /// The pan params, if this is a panning sprite (used to time the lifecycle).
+    pub fn pan(&self) -> Option<PanParams> {
+        self.pan
     }
 
     fn frame_index(&self, t: f64) -> usize {
@@ -322,16 +383,41 @@ fn draw_f1_frame(cr: &cairo::Context, ox: f64, p: f64, frame: usize) {
 
 impl Content for SpriteContent {
     fn natural_size(&self) -> (f64, f64) {
-        (self.fw, self.fh)
+        match self.pan {
+            // A panning sprite is sized to its visible slice, so `fit` scales the
+            // window (not the whole, much taller, figure).
+            Some(p) => (self.fw, p.slice),
+            None => (self.fw, self.fh),
+        }
     }
 
     fn draw(&self, cr: &cairo::Context, t: f64) {
         let idx = self.frame_index(t);
         let fx = (idx % self.cols) as f64 * self.fw;
         let fy = (idx / self.cols) as f64 * self.fh;
+
+        if let Some(pan) = self.pan {
+            // Vertical pan: clip to a slice centred on the origin, then blit the
+            // (tall) frame shifted so figure-row `window_top` lands at the slice
+            // top — scanning feet → focus → out.
+            let wt = pan.window_top(t, self.fh);
+            let half_w = self.fw / 2.0;
+            let half_h = pan.slice / 2.0;
+            cr.save().unwrap();
+            cr.rectangle(-half_w, -half_h, self.fw, pan.slice);
+            cr.clip();
+            cr.set_source_surface(&self.sheet, -half_w - fx, -wt - half_h - fy)
+                .unwrap();
+            if self.pixelated {
+                cr.source().set_filter(cairo::Filter::Nearest);
+            }
+            let _ = cr.paint();
+            cr.restore().unwrap();
+            return;
+        }
+
         let dx = -self.anchor.0;
         let dy = -self.anchor.1;
-
         cr.save().unwrap();
         // Clip to one frame, then blit the sheet shifted so that frame lands at
         // the local origin.

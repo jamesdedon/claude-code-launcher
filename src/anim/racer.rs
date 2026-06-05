@@ -1,11 +1,11 @@
-//! A Speed-Racer-style driver as a bespoke [`Content`]: an original 8-bit pixel
-//! homage (helmet + emblem, blue shirt, white pants, orange gloves, red shoes),
-//! drawn taller than the card and revealed by a slow **feet-to-face vertical
-//! pan**. The pan is internal to the content (a moving window over the figure),
-//! so it survives `fit`/squash — `natural_size` reports only the visible slice.
-//! Entrance/exit and placement live in [`super::Staged`].
+//! A Speed-Racer-style driver: an original 8-bit pixel homage (helmet + emblem,
+//! blue shirt, white pants, orange gloves, red shoes) in a three-quarter
+//! mid-stride. The figure is rendered to a tall sprite sheet ([`racer_sheet`]);
+//! the launcher reveals it with a vertical *pan* (see
+//! [`super::content::PanParams`]) configured from the animation manifest, so all
+//! the timings live in the `.toml`, not here.
 
-use super::content::Content;
+use super::content::{Play, SpriteContent};
 use gtk4::cairo;
 
 /// Device pixels per art pixel (matches the F1 car's chunky grid).
@@ -13,57 +13,40 @@ const P: f64 = 4.0;
 /// Figure art dimensions. Head/helmet near y=0, shoes near y=FIG_H.
 const FIG_W: f64 = 22.0;
 const FIG_H: f64 = 60.0;
-/// Height of the visible window (the slice the card shows at once).
-const SLICE_H: f64 = 18.0;
-/// Seconds the feet→face pan takes before holding on the face.
-const PAN_SECS: f64 = 4.0;
+/// Frames in the sheet — a short loop for the raised-fist bob.
+const FRAMES: usize = 8;
 
-pub struct Racer;
-
-impl Racer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for Racer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Where the top of the visible window sits in figure space at time `t`:
-/// starts low on the body (feet) and pans up to the face, then holds.
-fn window_top(t: f64) -> f64 {
-    let prog = (t / PAN_SECS).clamp(0.0, 1.0);
-    let eased = prog * prog * (3.0 - 2.0 * prog); // smoothstep: slow in/out
-    let start = FIG_H - SLICE_H; // feet at the bottom of the figure
-    let end = -2.0; // overshoot the helmet so the full top lands with headroom
-    start + (end - start) * eased
-}
-
-impl Content for Racer {
-    fn natural_size(&self) -> (f64, f64) {
-        // Only the visible slice — so fit scales the *window*, not the whole
-        // (much taller) figure.
-        (FIG_W * P, SLICE_H * P)
-    }
-
-    fn draw(&self, cr: &cairo::Context, t: f64) {
-        let half_w = FIG_W * P / 2.0;
-        let half_h = SLICE_H * P / 2.0;
-        let wt = window_top(t);
-
-        cr.save().unwrap();
-        // Clip to the slice (origin = slice centre), then draw the tall figure
-        // shifted so figure-row `wt` lands at the top of the slice.
-        cr.rectangle(-half_w, -half_h, FIG_W * P, SLICE_H * P);
-        cr.clip();
+/// Render the standing racer to a tall sprite sheet (one column per bob frame).
+/// Taller than the card; the launcher wraps it with a manifest-driven pan.
+pub fn racer_sheet() -> SpriteContent {
+    let fw = (FIG_W * P) as i32;
+    let fh = (FIG_H * P) as i32;
+    let surface =
+        cairo::ImageSurface::create(cairo::Format::ARgb32, fw * FRAMES as i32, fh).unwrap();
+    {
+        let cr = cairo::Context::new(&surface).unwrap();
         cr.set_antialias(cairo::Antialias::None);
-        cr.translate(-half_w, -wt * P - half_h);
-        draw_figure(cr, P, t);
-        cr.restore().unwrap();
+        for i in 0..FRAMES {
+            // Loop the raised-fist bob cleanly: draw_figure's bob is sin(t·2.2),
+            // so step t by one full period across the frames.
+            let t = i as f64 / FRAMES as f64 * std::f64::consts::TAU / 2.2;
+            cr.save().unwrap();
+            cr.translate(i as f64 * fw as f64, 0.0);
+            draw_figure(&cr, P, t);
+            cr.restore().unwrap();
+        }
     }
+    SpriteContent::new(
+        surface,
+        fw as f64,
+        fh as f64,
+        FRAMES,
+        FRAMES,
+        12.0,
+        Play::Loop,
+        (fw as f64 / 2.0, fh as f64 / 2.0), // anchor unused under pan
+    )
+    .pixelated(true)
 }
 
 /// Paint the racer in art space (origin at the figure's top-left), `p` device px
@@ -202,18 +185,14 @@ fn draw_figure(cr: &cairo::Context, p: f64, t: f64) {
 #[cfg(test)]
 mod preview {
     use super::*;
-    use std::f64::consts::TAU;
 
-    // Render the full figure and a feet→face pan filmstrip to /tmp for eyeballing
-    // the pixel art. Ignored by default:
+    // Render the figure (one bob frame, scaled up) to /tmp for eyeballing the
+    // pixel art. Ignored by default:
     //   cargo test -p claude-code-launcher --lib racer -- --ignored --nocapture
     #[test]
     #[ignore]
     fn render_preview() {
-        let _ = TAU;
         let scale = 8.0; // device px per art px, big for inspection
-
-        // Full figure on a checker-ish dark bg so transparency/edges are visible.
         let fw = (FIG_W * scale) as i32;
         let fh = (FIG_H * scale) as i32;
         let surf = cairo::ImageSurface::create(cairo::Format::ARgb32, fw, fh).unwrap();
@@ -226,33 +205,6 @@ mod preview {
         }
         let mut f = std::fs::File::create("/tmp/racer_figure.png").unwrap();
         surf.write_to_png(&mut f).unwrap();
-
-        // Pan filmstrip: 6 windows from feet (t=0) to face (t>=PAN_SECS).
-        let cols = 6;
-        let sw = (FIG_W * scale) as i32;
-        let sh = (SLICE_H * scale) as i32;
-        let strip =
-            cairo::ImageSurface::create(cairo::Format::ARgb32, sw * cols, sh + 8).unwrap();
-        {
-            let cr = cairo::Context::new(&strip).unwrap();
-            cr.set_source_rgba(0.15, 0.15, 0.18, 1.0);
-            let _ = cr.paint();
-            cr.set_antialias(cairo::Antialias::None);
-            for i in 0..cols {
-                let t = (i as f64 / (cols - 1) as f64) * PAN_SECS;
-                let wt = window_top(t);
-                cr.save().unwrap();
-                cr.translate(i as f64 * sw as f64, 4.0);
-                cr.rectangle(0.0, 0.0, FIG_W * scale, SLICE_H * scale);
-                cr.clip();
-                cr.translate(0.0, -wt * scale);
-                draw_figure(&cr, scale, t);
-                cr.restore().unwrap();
-            }
-        }
-        let mut f2 = std::fs::File::create("/tmp/racer_pan.png").unwrap();
-        strip.write_to_png(&mut f2).unwrap();
-
-        println!("wrote /tmp/racer_figure.png and /tmp/racer_pan.png");
+        println!("wrote /tmp/racer_figure.png");
     }
 }
