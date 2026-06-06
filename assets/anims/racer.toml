@@ -1,0 +1,19 @@
+# Just the Speed Racer driver, panning into view on open (no car on submit).
+[spawn]
+sheet        = "racer.png"
+frames       = 8
+columns      = 8
+frame_width  = 88
+frame_height = 240
+fps          = 12
+play         = "loop"
+pixelated    = true
+rest         = [0.75, 0.5, 0.0, 0.0]
+fit          = 0.92
+min_card     = 120
+enter_from   = { dx = 0, dy = 0 }
+exit_to      = { dx = 0, dy = 0 }
+stiffness    = 220.0
+damping      = 26.0
+squash       = 0.0
+pan          = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }

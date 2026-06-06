@@ -1,40 +1,81 @@
 # Sprites & Animations
 
-The launcher can host a small animation inside the prompt card. Animations are
-**pluggable** and selected by a string in `config.toml`. There are two kinds:
+The launcher can host a small animation inside the prompt card. Animations live
+as **drop-in pack files** in `~/.config/claude-code-launcher/anims/` — one
+`.toml` per animation. `config.toml` points at one with a single line. Drop a
+new pack in the folder to add it, delete a file to remove it, edit a pack and
+relaunch — no recompile.
 
-- **Built-in** — compiled into the binary, selected by `name` (`little_guy`,
-  `spinner`, `f1`, `none`). One vector character (`little_guy`) plus sprite
-  sheets.
-- **File-based** — a PNG sprite sheet plus a `.toml` manifest on disk, selected
-  by `file`. This is the primary way to add new animations: drop two files in a
-  folder, point the config at the manifest, no recompile.
+A pack is **self-contained**: a `.toml` (motion + all timings) plus the PNG
+**sheet** it points at. The built-in packs (`speed_racer`, `racer`, `f1`,
+`little_guy`, `spinner`, `cherry_blossoms`) and their sheets are seeded into the
+folder on first run; they're ordinary files you can edit, copy, or delete, with
+nothing about them named in the engine.
 
-This document specifies both, and the shared motion model underneath.
+This document specifies the pack format and the shared motion model underneath.
 
 ---
 
-## 1. The `[animation]` config block
+## 1. Selecting a pack — the `[animation]` block
 
-In `~/.config/claude-code-launcher/config.toml`. Use **either** `name` or
-`file` (file wins if both are present). With **no `[animation]` block at all,
-no animation runs.**
-
-| Key          | Type                          | Default       | Meaning |
-|--------------|-------------------------------|---------------|---------|
-| `name`       | string                        | `"little_guy"`| A built-in: `little_guy`, `spinner`, `f1`, `none`/`off`. |
-| `file`       | string (path)                 | —             | Path to a sprite manifest `.toml`. `~/` is expanded. Overrides `name`. |
-| `cycle`      | string                        | per-animation | `once` \| `loop` \| `hold`. Overrides the animation's lifecycle. |
-| `enter_from` | degrees \| edge \| `{dx,dy}`  | per-animation | Direction it enters from (see §5). |
-| `exit_to`    | degrees \| edge \| `{dx,dy}`  | per-animation | Direction it exits to. |
-
-Anything set here **overrides** the manifest, which overrides built-in defaults.
+In `~/.config/claude-code-launcher/config.toml`, one line points at a pack:
 
 ```toml
 [animation]
-file = "~/.config/claude-code-launcher/anims/f1.toml"
-cycle = "once"          # override the manifest's lifecycle just here
+name = "speed_racer"     # -> anims/speed_racer.toml
+# file = "~/some/where/my_pack.toml"   # ...or an explicit path
 ```
+
+| Key    | Type          | Meaning |
+|--------|---------------|---------|
+| `name` | string        | Pack filename stem in `anims/` (loads `<name>.toml`). |
+| `file` | string (path) | Explicit path to a pack `.toml`. `~/` expands. Wins over `name`. |
+
+With **no `[animation]` block, nothing runs.**
+
+### 1.1 The two slots — `[spawn]` and `[submit]`
+
+A pack has up to two sections, each optional; one file can fire **both**:
+
+- **`[spawn]`** — plays when the launcher opens.
+- **`[submit]`** — plays when you press Enter. The window stays open until this
+  section finishes its exit, *then* closes (so the car drives off before the
+  launcher vanishes) and only then spawns the terminal. A submit section is
+  always forced to a **single run** (any `cycle` coerced to `once`) so the close
+  can't hang.
+
+```toml
+# anims/speed_racer.toml
+[spawn]
+sheet        = "racer.png"   # a tall figure, panned over
+frames       = 8
+frame_width  = 88
+frame_height = 240
+pan          = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+rest         = [0.75, 0.5, 0, 0]
+fit          = 0.92
+min_card     = 120
+
+[submit]
+sheet        = "f1.png"
+frames       = 8
+cycle        = "once"
+enter_from   = "left"
+exit_to      = "right"
+rest         = [0.25, 0.62, 0, 0]
+fit          = 0.85
+min_card     = 96
+```
+
+A **flat** manifest (fields at top level, no `[spawn]`/`[submit]`) is treated as
+a single section routed by a `trigger = "spawn" | "submit"` field (default
+spawn).
+
+Each section draws a PNG `sheet` (see §2–§3); nothing about an animation is named
+in code. The built-in default packs ship their sheets alongside their `.toml`,
+all in `anims/`.
+
+A section's motion, frame, and pan fields are specified in §3–§7.
 
 ---
 
@@ -83,7 +124,9 @@ All optional; these mirror the built-in motion vocabulary.
 
 | Field        | Type                          | Default              | Meaning |
 |--------------|-------------------------------|----------------------|---------|
-| `cycle`      | string                        | `loop`               | Lifecycle: `once` \| `loop` \| `hold` (see §6). |
+| `cycle`      | string                        | `loop`               | Lifecycle: `once` \| `loop` \| `hold` (see §6). Ignored when `pan` is set. |
+| `trigger`    | string                        | `spawn`              | `spawn` \| `submit`, only for a **flat** manifest (in a `[spawn]`/`[submit]` section the slot is implied). |
+| `pan`        | `{ reveal, hold, exit, slice, focus }` | none      | A vertical camera pan up a tall figure (see §6.1); makes the section a single run timed to the pan. |
 | `enter_from` | degrees \| edge \| `{dx,dy}`  | `left` (180°)        | Where it slides in from (see §5). |
 | `exit_to`    | degrees \| edge \| `{dx,dy}`  | `right` (0°)         | Where it slinks out to. |
 | `rest`       | `[nx, ny, dx, dy]`            | `[0.5, 0.5, 0, 0]`   | Resting position (see §4). |
@@ -160,8 +203,31 @@ Two different time loops — don't confuse them:
 A typical race car uses `play = "loop"` (wheels keep spinning) with
 `cycle = "once"` (it drives through exactly once).
 
-The launcher pops the animation in when the prompt opens and, for one-shots,
-stops redrawing once finished (looping ones keep going).
+A `[spawn]` section pops in when the prompt opens; a `[submit]` section plays on
+Enter (see §1.1) and is always forced to a single run. For one-shots the
+launcher stops redrawing once finished (looping ones keep going).
+
+### 6.1 Pan (`pan`) — a vertical camera move
+
+A `pan` table turns a section into a vertical **camera pan** up a figure taller
+than the card: a `slice`-tall window starts at the feet, pans up to `focus`,
+holds, then continues out the top — leaving the card clear (the racer). Setting
+`pan` makes the section a **single run** timed to the pan, so `cycle` is ignored
+and the spring `enter_from`/`exit_to` should be zero (the pan is the motion).
+
+| Field    | Unit    | Default | Meaning |
+|----------|---------|---------|---------|
+| `slice`  | frame px | `72`   | Height of the visible window. |
+| `focus`  | frame px | `-8`   | Window-top to settle on (small negative frames the top with headroom). |
+| `reveal` | seconds | `2.6`   | Pan from the feet up to `focus`. |
+| `hold`   | seconds | `0.7`   | Hold on `focus`. |
+| `exit`   | seconds | `1.2`   | Continue from `focus` up and out of frame. |
+
+```toml
+pan = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+```
+
+Pan works on any sheet — it just clips a vertical window over the frame.
 
 ---
 
@@ -184,44 +250,54 @@ direction.
 
 ## 8. Precedence
 
-For every motion field: **config `[animation]` block → manifest → built-in
-default.** So you can ship a manifest with sensible defaults and still tweak
-`cycle`/`enter_from`/`exit_to` per-machine from the config block.
+Within a section, each field is **manifest value → engine default** (a small
+generic baseline; see `Defaults::sheet`). Whatever the section sets overrides it,
+so each pack `.toml` fully specifies its animation. The `config.toml`
+`[animation]` block doesn't override fields — it only **selects** the pack.
 
 ---
 
-## 9. Built-in animations
+## 9. Seeded packs
 
-| `name`       | Kind   | Default cycle | Enter → Exit  | Notes |
-|--------------|--------|---------------|---------------|-------|
-| `little_guy` | vector | `once`        | bottom ↑      | Peeks over the bottom edge; unscaled (overflows + masks). |
-| `spinner`    | sprite | `loop`        | right → right | Procedural demo sheet; `fit 0.8`, `min_card 96`. |
-| `f1`         | sprite | `once`        | left → right  | 8-bit car; under-damped spring (fights for grip); `fit 0.85`, `min_card 96`. |
-| `none`/`off` | —      | —             | —             | No animation. |
+These ship in `anims/` on first run (written only if missing, so your edits and
+deletions stick). Each is an ordinary `.toml` + PNG sheet — nothing is named in
+the engine.
+
+| pack             | slots          | what it does |
+|------------------|----------------|--------------|
+| `speed_racer`    | spawn + submit | Driver pans into view on open, then the car launches off the line on submit. |
+| `racer`          | spawn          | Just the driver pan. |
+| `f1`             | submit         | Just the car launching on submit. |
+| `little_guy`     | spawn          | The little guy peeking over the bottom edge. |
+| `spinner`        | spawn          | A looping sprite drifting in. |
+| `cherry_blossoms`| spawn          | A field of petals drifting top→bottom (seamless loop). |
+
+The sheets (`racer.png`, `f1.png`, `spinner.png`, `little_guy.png`,
+`blossoms.png`) are generated from code by `cargo run --example gen_assets` and
+committed under `assets/anims/`; the binary embeds that folder and seeds it.
 
 ---
 
-## 10. Authoring workflow
+## 10. Authoring a pack
 
-1. **Start from a seed.** Export the built-in sheets to real files to edit:
-   ```sh
-   cargo run --example export_sheet ~/.config/claude-code-launcher/anims
-   ```
-   This writes `f1.png` + `f1.toml` and `spinner.png` + `spinner.toml`.
-2. **Edit the PNG** in any pixel editor (keep frame size + grid consistent), and
-   tweak the manifest.
-3. **Point the config at it:**
+1. **Copy a seed.** Start from a seeded pack in `anims/`, e.g. `cp
+   anims/speed_racer.toml anims/my_thing.toml` (and a sheet to point at).
+2. **Edit it.** Point each section at a PNG `sheet` (see §2–§3 for the
+   sheet/frame fields). Set motion, `pan`, `rest`, `fit`, `min_card`. Put a
+   `[spawn]` and/or `[submit]` section in the one file.
+3. **Select it:**
    ```toml
    [animation]
-   file = "~/.config/claude-code-launcher/anims/f1.toml"
+   name = "my_thing"     # -> anims/my_thing.toml
    ```
-4. Restart the launcher to see it.
+4. Relaunch — no rebuild.
 
-### Full annotated example manifest
+### Full annotated pack
 
 ```toml
-# A side-view racer that drives in from the left and takes off right.
-sheet      = "racecar.png"   # next to this manifest
+# my_thing.toml — a side-view racer that drives in on open.
+[spawn]
+sheet      = "racecar.png"   # your PNG, next to this file
 frames     = 8
 columns    = 8               # single row of 8
 frame_width  = 152
@@ -230,7 +306,6 @@ fps        = 12              # wheel-spin speed
 anchor     = { x = 76, y = 46 }   # ~centre of the frame
 play       = "loop"          # frames cycle forever while on screen
 pixelated  = true            # crisp 8-bit scaling
-
 cycle      = "once"          # one drive-through, then gone
 enter_from = "left"          # = 180 degrees
 exit_to    = "right"         # = 0 degrees
@@ -244,16 +319,15 @@ squash     = 0.02            # stretch with speed
 
 ---
 
-## 11. Adding a built-in (Rust)
+## 11. Generating sheet art from code
 
-Sprites-as-files is the recommended path, but a bespoke animation can be added
-in code:
-
-- Implement `Content` (appearance: `natural_size` + `draw(cr, t)`), or reuse
-  `SpriteContent` with a procedurally-generated sheet.
-- Register it in `anim::build()` by wrapping it in `Staged::new(...)` with an
-  `Approach` (rest + enter/exit `Dir`), a `Spring`, and chaining
-  `.with_lifecycle(...)`, `.with_fit(...)`, `.with_min_card(...)`.
+The engine only plays PNG sheets — it never draws an animation itself. The
+built-in default sheets happen to be *generated* from code as a convenience: the
+generators live behind `cargo run --example gen_assets`, which renders each one
+(`SpriteContent::f1_car`, `racer::racer_sheet`, `little_guy::little_guy_sheet`,
+`blossoms::blossoms_sheet`, …) into `assets/anims/*.png`. To add or change one,
+edit/add a generator, re-run `gen_assets`, and commit the PNG — or just author a
+PNG by hand and point a pack at it. Either way the runtime stays generic.
 
 The motion layer (`Staged`) handles placement, direction, squash, fit, and the
-lifecycle uniformly for sprite and vector content alike.
+lifecycle uniformly; `SpriteContent` adds the optional vertical `pan`.

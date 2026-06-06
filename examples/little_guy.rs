@@ -3,15 +3,15 @@
 //   cargo run --example little_guy            # the little guy (default)
 //   ANIM=spinner cargo run --example little_guy   # a sprite, same pipeline
 //
-// The ANIM env var stands in for the `[animation] name = "..."` config key
-// until the system is wired into main.rs. It proves interchangeability: change
-// the string, change the animation — sprite or vector, any direction.
+// The ANIM env var names a built-in pack; the harness seeds the packs to a temp
+// dir, loads the chosen one, and previews its spawn slot. It proves
+// interchangeability: change the string, change the animation.
 //
 // This harness only owns the prompt-card chrome (rounded, masked via
 // overflow:hidden, bottom padding dropped so animations seat flush to the
 // edge) and a demo show/hide loop. All motion + appearance live in the lib.
 
-use claude_code_launcher::anim::{self, AnimSpec, Animation, Stage};
+use claude_code_launcher::anim::{self, Animation, Stage};
 use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, Align, Application, ApplicationWindow, Box as GtkBox, CssProvider, DrawingArea,
@@ -42,16 +42,14 @@ fn main() -> glib::ExitCode {
 fn build(app: &Application) {
     install_css();
 
-    // ANIM picks the animation; CYCLE optionally overrides its lifecycle
-    // ("once" | "loop" | "hold") so you can re-watch a one-shot on a loop.
+    // Seed the built-in packs to a temp dir and load the chosen one (ANIM=name,
+    // default little_guy), previewing its spawn slot.
+    let dir = std::env::temp_dir().join("ccl-anim-preview");
+    anim::seed_builtin_packs(&dir);
     let name = std::env::var("ANIM").unwrap_or_else(|_| "little_guy".to_string());
-    let spec = AnimSpec {
-        name,
-        cycle: std::env::var("CYCLE").ok(),
-        ..Default::default()
-    };
+    let (open, _submit) = anim::load_pack(&dir.join(format!("{name}.toml")));
     let harness = Rc::new(RefCell::new(Harness {
-        anim: anim::build(&spec),
+        anim: open,
         last_us: None,
     }));
 
