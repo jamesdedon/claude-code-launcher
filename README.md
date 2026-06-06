@@ -121,4 +121,15 @@ The binary spawns your configured terminal command as a child process, with `{cw
 
 ## Animations
 
-The prompt card can optionally host a small animation — a built-in, or a sprite sheet you supply as a PNG + TOML manifest. Configure it with an `[animation]` block; with no such block, none runs. See [docs/animations.md](docs/animations.md) for the full spec (sheet layout, manifest fields, direction/lifecycle/fit options, and the authoring workflow).
+The prompt card can optionally host a small animation. Animations are **drop-in pack files** in `~/.config/claude-code-launcher/anims/` — one self-contained `.toml` (motion + all timings) plus the PNG sprite sheet it points at. The launcher seeds a set of built-in packs there on first run; they're ordinary files you can edit, copy, or delete.
+
+Select one with a single line in `config.toml`:
+
+```toml
+[animation]
+name = "speed_racer"   # -> anims/speed_racer.toml
+```
+
+A pack can have a `[spawn]` section (plays when the launcher opens) and/or a `[submit]` section (plays on Enter — the window waits for it before the terminal opens), so one file can drive both. Seeded packs: `speed_racer` (driver pans in, then the car launches), `racer`, `f1`, `little_guy`, `spinner`, `cherry_blossoms`. With no `[animation]` block, none runs.
+
+To add your own: drop a `.toml` + PNG into the `anims/` folder and point `name` at it — no rebuild. See [docs/animations.md](docs/animations.md) for the full spec (pack/section format, sheet layout, motion/lifecycle/fit options, the vertical `pan`, and the authoring workflow).
