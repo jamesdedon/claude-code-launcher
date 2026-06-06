@@ -2,11 +2,45 @@
 //! local coordinates with the origin at his feet; idle bob + blink run off `t`.
 //! Entrance/exit motion, placement and squash all live in [`super::Staged`].
 
-use super::content::Content;
+use super::content::{Content, Play, SpriteContent};
 use gtk4::cairo;
 
 const BODY_W: f64 = 70.0;
 const BODY_H: f64 = 90.0;
+
+/// Bake the little guy to a sprite sheet (the shipped default art). The frame
+/// places his **feet** at `(36, 90)` and that point is the sheet anchor, so the
+/// motion's rest `[1, 1, -58, 37]` seats him exactly as the live vector did —
+/// feet just below the card, head peeking over the masked edge. Frames cover a
+/// bob (starting just past the t=0 blink); for a one-shot he never wraps.
+pub fn little_guy_sheet() -> SpriteContent {
+    let frames = 24usize;
+    let (fw, fh) = (72i32, 92i32);
+    let fps = 12.0;
+    let surface =
+        cairo::ImageSurface::create(cairo::Format::ARgb32, fw * frames as i32, fh).unwrap();
+    {
+        let cr = cairo::Context::new(&surface).unwrap();
+        let guy = VectorGuy::new();
+        for i in 0..frames {
+            let t = 0.3 + i as f64 / fps;
+            cr.save().unwrap();
+            cr.translate(i as f64 * fw as f64 + 36.0, 90.0); // feet
+            guy.draw(&cr, t);
+            cr.restore().unwrap();
+        }
+    }
+    SpriteContent::new(
+        surface,
+        fw as f64,
+        fh as f64,
+        frames,
+        frames,
+        fps,
+        Play::Loop,
+        (36.0, 90.0), // anchor = feet
+    )
+}
 
 pub struct VectorGuy;
 

@@ -6,10 +6,11 @@ as **drop-in pack files** in `~/.config/claude-code-launcher/anims/` — one
 new pack in the folder to add it, delete a file to remove it, edit a pack and
 relaunch — no recompile.
 
-A pack is **self-contained**: art, motion, and all timings live in its `.toml`.
-The built-in packs (`speed_racer`, `racer`, `f1`, `little_guy`, `spinner`) are
-seeded into the folder on first run; they reference built-in **figures** drawn
-in code, while your own packs point at a PNG **sheet** instead.
+A pack is **self-contained**: a `.toml` (motion + all timings) plus the PNG
+**sheet** it points at. The built-in packs (`speed_racer`, `racer`, `f1`,
+`little_guy`, `spinner`, `cherry_blossoms`) and their sheets are seeded into the
+folder on first run; they're ordinary files you can edit, copy, or delete, with
+nothing about them named in the engine.
 
 This document specifies the pack format and the shared motion model underneath.
 
@@ -46,32 +47,33 @@ A pack has up to two sections, each optional; one file can fire **both**:
 ```toml
 # anims/speed_racer.toml
 [spawn]
-figure   = "racer"
-pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
-rest     = [0.75, 0.5, 0, 0]
-fit      = 0.92
-min_card = 120
+sheet        = "racer.png"   # a tall figure, panned over
+frames       = 8
+frame_width  = 88
+frame_height = 240
+pan          = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+rest         = [0.75, 0.5, 0, 0]
+fit          = 0.92
+min_card     = 120
 
 [submit]
-figure     = "f1"
-cycle      = "once"
-enter_from = "left"
-exit_to    = "right"
-rest       = [0.25, 0.62, 0, 0]
-fit = 0.85
-min_card = 96
+sheet        = "f1.png"
+frames       = 8
+cycle        = "once"
+enter_from   = "left"
+exit_to      = "right"
+rest         = [0.25, 0.62, 0, 0]
+fit          = 0.85
+min_card     = 96
 ```
 
 A **flat** manifest (fields at top level, no `[spawn]`/`[submit]`) is treated as
 a single section routed by a `trigger = "spawn" | "submit"` field (default
 spawn).
 
-Each section draws either a built-in `figure` or a PNG `sheet`:
-
-| Key      | Meaning |
-|----------|---------|
-| `figure` | A built-in figure by name: `racer`, `f1`, `spinner`, `little_guy`. |
-| `sheet`  | A PNG sprite sheet (relative to the pack), used instead of `figure`. |
+Each section draws a PNG `sheet` (see §2–§3); nothing about an animation is named
+in code. The built-in default packs ship their sheets alongside their `.toml`,
+all in `anims/`.
 
 A section's motion, frame, and pan fields are specified in §3–§7.
 
@@ -225,7 +227,7 @@ and the spring `enter_from`/`exit_to` should be zero (the pan is the motion).
 pan = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
 ```
 
-Pan only applies to sprite/figure content (not the vector `little_guy`).
+Pan works on any sheet — it just clips a vertical window over the frame.
 
 ---
 
@@ -248,47 +250,41 @@ direction.
 
 ## 8. Precedence
 
-Within a section, each field is **manifest value → figure/sheet default**. Each
-built-in `figure` carries sensible defaults (rest, fit, spring, and — for the
-racer — a pan); whatever the section sets overrides them. The `config.toml`
-`[animation]` block no longer overrides fields — it only **selects** the pack;
-all tuning lives in the pack `.toml`.
+Within a section, each field is **manifest value → engine default** (a small
+generic baseline; see `Defaults::sheet`). Whatever the section sets overrides it,
+so each pack `.toml` fully specifies its animation. The `config.toml`
+`[animation]` block doesn't override fields — it only **selects** the pack.
 
 ---
 
-## 9. Built-in figures & seeded packs
+## 9. Seeded packs
 
-Built-in **figures** (drawable by `figure = "..."`):
+These ship in `anims/` on first run (written only if missing, so your edits and
+deletions stick). Each is an ordinary `.toml` + PNG sheet — nothing is named in
+the engine.
 
-| `figure`     | Kind   | Notes |
-|--------------|--------|-------|
-| `little_guy` | vector | Peeks over the bottom edge; unscaled (overflows + masks). Can't pan. |
-| `racer`      | sprite | Speed-Racer-style driver, rendered to a tall sheet; meant to be revealed by a `pan`. |
-| `spinner`    | sprite | Procedural demo sheet. |
-| `f1`         | sprite | 8-bit car; under-damped spring (fights for grip). |
-| `none`/`off` | —      | Nothing. |
+| pack             | slots          | what it does |
+|------------------|----------------|--------------|
+| `speed_racer`    | spawn + submit | Driver pans into view on open, then the car launches off the line on submit. |
+| `racer`          | spawn          | Just the driver pan. |
+| `f1`             | submit         | Just the car launching on submit. |
+| `little_guy`     | spawn          | The little guy peeking over the bottom edge. |
+| `spinner`        | spawn          | A looping sprite drifting in. |
+| `cherry_blossoms`| spawn          | A field of petals drifting top→bottom (seamless loop). |
 
-Seeded **packs** in `anims/` (referenced by `name`):
-
-| pack          | slots          | what it does |
-|---------------|----------------|--------------|
-| `speed_racer` | spawn + submit | Driver pans into view on open, then the car launches off the line on submit. |
-| `racer`       | spawn          | Just the driver pan. |
-| `f1`          | submit         | Just the car launching on submit. |
-| `little_guy`  | spawn          | The little guy peeking up. |
-| `spinner`     | spawn          | A looping sprite drifting in. |
-
-Seeded files are written only if missing, so your edits and deletions stick.
+The sheets (`racer.png`, `f1.png`, `spinner.png`, `little_guy.png`,
+`blossoms.png`) are generated from code by `cargo run --example gen_assets` and
+committed under `assets/anims/`; the binary embeds that folder and seeds it.
 
 ---
 
 ## 10. Authoring a pack
 
 1. **Copy a seed.** Start from a seeded pack in `anims/`, e.g. `cp
-   anims/speed_racer.toml anims/my_thing.toml`.
-2. **Edit it.** Use a built-in `figure`, or point a section at your own PNG
-   `sheet` (see §2–§3 for the sheet/frame fields). Set motion, `pan`, `rest`,
-   `fit`, `min_card`. Put a `[spawn]` and/or `[submit]` section in the one file.
+   anims/speed_racer.toml anims/my_thing.toml` (and a sheet to point at).
+2. **Edit it.** Point each section at a PNG `sheet` (see §2–§3 for the
+   sheet/frame fields). Set motion, `pan`, `rest`, `fit`, `min_card`. Put a
+   `[spawn]` and/or `[submit]` section in the one file.
 3. **Select it:**
    ```toml
    [animation]
@@ -301,7 +297,7 @@ Seeded files are written only if missing, so your edits and deletions stick.
 ```toml
 # my_thing.toml — a side-view racer that drives in on open.
 [spawn]
-sheet      = "racecar.png"   # your PNG, next to this file (or use figure = "...")
+sheet      = "racecar.png"   # your PNG, next to this file
 frames     = 8
 columns    = 8               # single row of 8
 frame_width  = 152
@@ -323,16 +319,15 @@ squash     = 0.02            # stretch with speed
 
 ---
 
-## 11. Adding a built-in figure (Rust)
+## 11. Generating sheet art from code
 
-Packs-as-files is the recommended path, but a new built-in `figure` can be added
-in code:
-
-- Implement `Content` (appearance: `natural_size` + `draw(cr, t)`), or build a
-  `SpriteContent` from a procedurally-generated sheet (see `racer::racer_sheet`).
-- Map a `figure` name to it in `anim::build_section`, with a `Defaults` entry for
-  its rest/spring/fit/pan.
+The engine only plays PNG sheets — it never draws an animation itself. The
+built-in default sheets happen to be *generated* from code as a convenience: the
+generators live behind `cargo run --example gen_assets`, which renders each one
+(`SpriteContent::f1_car`, `racer::racer_sheet`, `little_guy::little_guy_sheet`,
+`blossoms::blossoms_sheet`, …) into `assets/anims/*.png`. To add or change one,
+edit/add a generator, re-run `gen_assets`, and commit the PNG — or just author a
+PNG by hand and point a pack at it. Either way the runtime stays generic.
 
 The motion layer (`Staged`) handles placement, direction, squash, fit, and the
-lifecycle uniformly for sprite and vector content alike; `SpriteContent` adds the
-optional vertical `pan`.
+lifecycle uniformly; `SpriteContent` adds the optional vertical `pan`.

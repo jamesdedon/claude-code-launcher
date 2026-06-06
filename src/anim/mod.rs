@@ -156,15 +156,12 @@ impl Animation for NoAnim {
 }
 
 /// One animation *section* — the body of a `[spawn]` or `[submit]` table (or a
-/// whole flat manifest). The art is either a built-in `figure` (drawn in code)
-/// or a PNG `sheet`; the rest are motion fields. All timings live here, so an
-/// animation file is self-contained.
+/// whole flat manifest). Its art is a PNG `sheet`; the rest are motion fields.
+/// All art and timings live in the file, so an animation is self-contained and
+/// nothing about it is named in code.
 #[derive(Debug, Clone, Deserialize, Default)]
 struct SpriteManifest {
-    /// A built-in figure by name: "racer", "f1", "spinner", "little_guy".
-    #[serde(default)]
-    figure: Option<String>,
-    /// A PNG sprite sheet (relative to the manifest). Use instead of `figure`.
+    /// A PNG sprite sheet, relative to the pack file (`~/` also expands).
     #[serde(default)]
     sheet: Option<String>,
     #[serde(default = "default_frames")]
@@ -317,62 +314,6 @@ impl Defaults {
             pan: None,
         }
     }
-    fn racer() -> Self {
-        Self {
-            rest: Anchor::new(0.75, 0.5, 0.0, 0.0),
-            enter: Dir::Xy { dx: 0.0, dy: 0.0 }, // the pan does the motion
-            exit: Dir::Xy { dx: 0.0, dy: 0.0 },
-            cycle: Lifecycle::Hold, // replaced by a pan-timed Once
-            fit: Some(0.92),
-            min_card: 120,
-            stiffness: 220.0,
-            damping: 26.0,
-            squash: 0.0,
-            pan: Some(PanParams { slice: 72.0, focus: -8.0, reveal: 2.6, hold: 0.7, exit: 1.2 }),
-        }
-    }
-    fn f1() -> Self {
-        Self {
-            rest: Anchor::new(0.25, 0.62, 0.0, 0.0),
-            enter: Dir::Deg(180.0),
-            exit: Dir::Deg(0.0),
-            cycle: Lifecycle::Once { hold: 1.0 },
-            fit: Some(0.85),
-            min_card: 96,
-            stiffness: 240.0,
-            damping: 11.0,
-            squash: 0.02,
-            pan: None,
-        }
-    }
-    fn spinner() -> Self {
-        Self {
-            rest: Anchor::new(0.5, 0.5, 0.0, 0.0),
-            enter: Dir::Deg(0.0),
-            exit: Dir::Deg(0.0),
-            cycle: Lifecycle::Loop { hold: 2.5, gap: 1.0 },
-            fit: Some(0.8),
-            min_card: 96,
-            stiffness: 180.0,
-            damping: 16.0,
-            squash: 0.02,
-            pan: None,
-        }
-    }
-    fn little_guy() -> Self {
-        Self {
-            rest: Anchor::new(1.0, 1.0, -58.0, 37.0),
-            enter: Dir::Deg(270.0),
-            exit: Dir::Deg(270.0),
-            cycle: Lifecycle::Once { hold: 1.4 },
-            fit: None,
-            min_card: 0,
-            stiffness: 220.0,
-            damping: 18.0,
-            squash: 0.028,
-            pan: None,
-        }
-    }
 }
 
 /// The pan params for a section: manifest `[pan]` over the figure's default.
@@ -453,34 +394,21 @@ fn load_sheet_content(
 }
 
 /// Build one section (the body of a `[spawn]`/`[submit]` table) into a
-/// ready-to-drive animation. Art is a built-in `figure` or a PNG `sheet`.
+/// ready-to-drive animation from its PNG `sheet`.
 fn build_section(
     m: &SpriteManifest,
     base_dir: &Path,
     slot: Trigger,
 ) -> Result<Box<dyn Animation>, String> {
-    // The little guy is the only vector built-in figure; it can't pan.
-    if m.figure.as_deref() == Some("little_guy") {
-        return Ok(apply_motion(VectorGuy::new(), m, &Defaults::little_guy(), None, slot));
-    }
-    let (content, d) = if let Some(fig) = &m.figure {
-        match fig.as_str() {
-            "racer" | "speed_racer" => (racer::racer_sheet(), Defaults::racer()),
-            "f1" | "f1_car" => (SpriteContent::f1_car(), Defaults::f1()),
-            "spinner" => (SpriteContent::spinner(), Defaults::spinner()),
-            "none" | "off" => return Ok(Box::new(NoAnim)),
-            other => return Err(format!("unknown figure '{other}'")),
-        }
-    } else if let Some(sheet) = &m.sheet {
-        (load_sheet_content(sheet, base_dir, m)?, Defaults::sheet())
-    } else {
-        return Err("animation section needs a `figure` or `sheet`".to_string());
+    let Some(sheet) = &m.sheet else {
+        return Err("animation section needs a `sheet`".to_string());
     };
+    let d = Defaults::sheet();
     let pan = resolve_pan(m, &d);
-    let content = match pan {
-        Some(p) => content.with_pan(p),
-        None => content,
-    };
+    let mut content = load_sheet_content(sheet, base_dir, m)?;
+    if let Some(p) = pan {
+        content = content.with_pan(p);
+    }
     Ok(apply_motion(content, m, &d, pan, slot))
 }
 

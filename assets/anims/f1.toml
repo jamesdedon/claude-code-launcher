@@ -1,9 +1,19 @@
 # Just the 8-bit F1 car, launching off the line when you submit.
 [submit]
-figure     = "f1"
-cycle      = "once"
-enter_from = "left"
-exit_to    = "right"
-rest       = [0.25, 0.62, 0.0, 0.0]
-fit        = 0.85
-min_card   = 96
+sheet        = "f1.png"
+frames       = 8
+columns      = 8
+frame_width  = 152
+frame_height = 72
+fps          = 12
+play         = "loop"
+pixelated    = true
+cycle        = "once"
+enter_from   = "left"
+exit_to      = "right"
+rest         = [0.25, 0.62, 0.0, 0.0]
+fit          = 0.85
+min_card     = 96
+stiffness    = 240.0
+damping      = 11.0
+squash       = 0.02

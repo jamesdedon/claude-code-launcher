@@ -1,19 +1,42 @@
 # Speed Racer: the driver pans into view on open, then launches off the line as
-# the car when you submit. Edit any number below; no rebuild needed.
+# the car when you submit. Both pieces are sprite sheets (anims/*.png) — fully
+# self-contained; edit any number and relaunch, no rebuild.
 
 [spawn]
-figure   = "racer"
-rest     = [0.75, 0.5, 0.0, 0.0]   # right quarter of the card
-fit      = 0.92
-min_card = 120
-# A vertical pan up the figure (frame pixels / seconds):
-pan      = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
+sheet        = "racer.png"
+frames       = 8
+columns      = 8
+frame_width  = 88
+frame_height = 240
+fps          = 12
+play         = "loop"
+pixelated    = true
+rest         = [0.75, 0.5, 0.0, 0.0]   # right quarter of the card
+fit          = 0.92
+min_card     = 120
+enter_from   = { dx = 0, dy = 0 }      # the pan is the motion, not a slide
+exit_to      = { dx = 0, dy = 0 }
+stiffness    = 220.0
+damping      = 26.0
+squash       = 0.0
+# A vertical pan up the tall sprite (frame pixels / seconds):
+pan          = { reveal = 2.6, hold = 0.7, exit = 1.2, slice = 72, focus = -8 }
 
 [submit]
-figure     = "f1"
-cycle      = "once"
-enter_from = "left"
-exit_to    = "right"
-rest       = [0.25, 0.62, 0.0, 0.0]
-fit        = 0.85
-min_card   = 96
+sheet        = "f1.png"
+frames       = 8
+columns      = 8
+frame_width  = 152
+frame_height = 72
+fps          = 12
+play         = "loop"
+pixelated    = true
+cycle        = "once"
+enter_from   = "left"
+exit_to      = "right"
+rest         = [0.25, 0.62, 0.0, 0.0]
+fit          = 0.85
+min_card     = 96
+stiffness    = 240.0
+damping      = 11.0
+squash       = 0.02

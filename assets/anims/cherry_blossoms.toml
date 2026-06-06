@@ -1,6 +1,6 @@
 # Cherry blossoms drifting down the prompt on open — a seamless looping sprite
 # sheet (blossoms.png), played by the generic sheet engine. Fully self-contained:
-# this toml + the png, no built-in figure.
+# this toml + the png, nothing drawn in code.
 [spawn]
 sheet        = "blossoms.png"
 frames       = 48

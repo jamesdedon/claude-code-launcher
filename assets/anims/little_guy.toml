@@ -1,7 +1,17 @@
 # A little guy peeking up over the bottom edge on open, then slinking away.
 [spawn]
-figure     = "little_guy"
-cycle      = "once"
-enter_from = "bottom"
-exit_to    = "bottom"
-rest       = [1.0, 1.0, -58.0, 37.0]
+sheet        = "little_guy.png"
+frames       = 24
+columns      = 24
+frame_width  = 72
+frame_height = 92
+fps          = 12
+play         = "loop"
+anchor       = { x = 36, y = 90 }   # his feet — seated by `rest` below
+cycle        = "once"
+enter_from   = "bottom"
+exit_to      = "bottom"
+rest         = [1.0, 1.0, -58.0, 37.0]
+stiffness    = 220.0
+damping      = 18.0
+squash       = 0.028

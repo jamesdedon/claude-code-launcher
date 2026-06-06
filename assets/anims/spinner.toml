@@ -1,7 +1,18 @@
 # A looping sprite drifting in from the right on open.
 [spawn]
-figure   = "spinner"
-cycle    = "loop"
-rest     = [0.5, 0.5, 0.0, 0.0]
-fit      = 0.8
-min_card = 96
+sheet        = "spinner.png"
+frames       = 24
+columns      = 24
+frame_width  = 72
+frame_height = 72
+fps          = 24
+play         = "loop"
+cycle        = "loop"
+enter_from   = "right"
+exit_to      = "right"
+rest         = [0.5, 0.5, 0.0, 0.0]
+fit          = 0.8
+min_card     = 96
+stiffness    = 180.0
+damping      = 16.0
+squash       = 0.02
