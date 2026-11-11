@@ -133,3 +133,7 @@ name = "speed_racer"   # -> anims/speed_racer.toml
 A pack can have a `[spawn]` section (plays when the launcher opens) and/or a `[submit]` section (plays on Enter — the window waits for it before the terminal opens), so one file can drive both. Seeded packs: `speed_racer` (driver pans in, then the car launches), `racer`, `f1`, `little_guy`, `spinner`, `cherry_blossoms`. With no `[animation]` block, none runs.
 
 To add your own: drop a `.toml` + PNG into the `anims/` folder and point `name` at it — no rebuild. See [docs/animations.md](docs/animations.md) for the full spec (pack/section format, sheet layout, motion/lifecycle/fit options, the vertical `pan`, and the authoring workflow).
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
